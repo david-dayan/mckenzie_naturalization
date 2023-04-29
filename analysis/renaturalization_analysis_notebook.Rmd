@@ -1,0 +1,600 @@
+---
+title: "Naturalization Analysis Notebook"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+---
+
+
+```{r, message = FALSE, warning=FALSE}
+require(car)
+require(DHARMa)
+require(emmeans)
+require(MASS)
+require(effects)
+require(glmmTMB)
+require(lme4)
+require(kableExtra)
+require(gt)
+require(gtsummary)
+require(tidyverse)
+require(magrittr)
+require(countreg)
+require(lmerTest)
+require(lubridate)
+require(khroma)
+```
+
+
+# Summary
+
+This notebook contains a log of all analyses associated with the manuscript titled: A single generation in the wild increases fitness for descendants of hatchery Chinook salmon (_Oncorhynchus tshawytscha_)
+
+This is an R notebook. The .html version of this file is a fully rendered and interactive log. To view it, save the html and open in a browse. The .rmd version can be opened within R studio. To reproduce results or edit the analysis: clone the full repository onto your local machine and open the r project in rstudio. This will provide all needed data and objects.
+
+# Pedigrees, Cohorts, Variables and Rationale of Comparisons
+
+This notebook relies on a pedigree of all Chinook Salmon released above Cougar Dam on the South Fork McKenzie River from 2007 - 2017 using potential offspring sampled from 2010 to 2020.
+
+## Summary of Cohort Years
+
+Nearly all (98%) Chinook salmon on the South Fork McKenzie express an age at maturity of 4 - 5 years, with approximately 2% returning at age 3 or age 6. Therefore, our data data allow us to identify all offspring of salmon released above Cougar Dam in 2010 - 2014, and nearly all offspring of salmon released above Cougar Dam in 2015. From the offspring's perspective, we sample all possible parents of potential offspring that return from 2013 - 2020, and nearly all (98%) parents of potential offspring that returned in 2012. 
+
+Therefore for adults that return and are released above the dam from 2012 - 2015, we know both their parentage and how many returing adult offspring they produce. 
+
+## Definition of Variables
+
+### TLF  
+
+For each candidate parent (any salmon released above the dam), we define total lifetime fitness (TLF) as the number of adult offspring produced by a individual candidate parent. Adult offspring are identified through parentage analysis, with any salmon collected at the Cougar Trap or during spawning ground surveys above or below the dam evaluated as potential offspring.
+
+
+### Generation  
+This analysis is based on comparisons of TLF between three groups of candidate parent salmon released above Cougar Dam from 2012 - 2015:  
+
+__(1) Hatchery/HOR:__ These are hatchery-origin fish from the McKenzie spring Chinook salmon hatchery program, that are released above the dam.  
+__(2) F1:__ We define F1s as the first generation wild born offspring of hatchery salmon released above the dam. Both of their parents are HOR. 
+__(3) NORimmigrant:__ We define NOR immigrant salmon as any salmon without an adipose clip that does not assign to a parent previously released above the dam. These salmon are presumed to be produced below the dam or elsewhere (no parentage assignment), and to also be wild born (no adipose clip). In the manuscript we will refer to these simply as NOR, but for the notebook we will label as NORimmigrant to avoid confusion with other unclipped fish.   
+
+We refer to this variable as __generation__ in this notebook
+
+__Other fish__  
+There are many other individuals in the pedigree that do not fall into one of these three groups:
+* Individuals that assign to a single parent  
+* Individuals from mixed mate pairs (e.g. HORxF1 parents)  
+* Individuals that are never released above the dam and therefore are not candidate parents and have no TLF estimate (e.g. F1 salmon that are recycled downstream of the dam and never return to be released above the dam)  
+
+# Data 
+
+Here we import the finalized datasets from the McKenzie River Chinook salmon evaluation, create new datasets for this analysis, and summarize the data.
+
+## Data Import
+
+Here we import and assemble datasets from previous analyses 
+```{r}
+# load pedigree and full dataset
+load("../input_data/full_filtered_dataset.R")
+load("../input_data/pedigree.R")
+
+# deduplicate (many individuals are sampled first live and later as carcasses, this defines individuals by their first encounter)
+dedup <- full_data_1.0 %>%
+  group_by(sample_id) %>%
+  slice_max(date, with_ties = FALSE) %>%
+  ungroup()
+```
+
+```{r}
+# let's get the metadata on the pedigree
+pedigree_meta <- dedup %>%
+  select(sample_id, year, type, date) %>%
+  rename_with(.fn = ~ paste0("offspring_", .x)) %>%
+  right_join(pedigree, by = c("offspring_sample_id" = "offspring_sample_id"))
+
+#father
+pedigree_meta <- dedup %>%
+  select(sample_id, year, type, date) %>%
+  rename_with(.fn = ~ paste0("father_", .x)) %>%
+  right_join(pedigree_meta, by = c("father_sample_id" = "father")) %>%
+  rename(father = father_sample_id)
+
+#mother
+pedigree_meta <- dedup %>%
+  select(sample_id, year, type, date) %>%
+  rename_with(.fn = ~ paste0("mother_", .x)) %>%
+  right_join(pedigree_meta, by = c("mother_sample_id" = "mother")) %>%
+  rename(mother = mother_sample_id)
+
+pedigree_meta %<>%
+  mutate(parent_year = (coalesce(father_year, mother_year)))
+
+#let's add a column for the type of assignment, and one for combined types
+pedigree_meta %<>%
+  mutate(assn_type = case_when((mother == "none" & father == "none") ~ "none",
+                               (mother == "none" & father != "none") ~ "male_only",
+                               (mother != "none" & father == "none") ~ "female_only",
+                               (mother != "none" & father != "none") ~ "pair",)) %>%
+  mutate(parent_type = case_when((father_type == mother_type) ~ father_type,
+                                 (is.na(father_type) & !(is.na(mother_type))) ~ mother_type,
+                                  (is.na(mother_type) & !(is.na(father_type))) ~ father_type,
+                                   (father_type != mother_type) ~ paste(mother_type, father_type, sep = "/")))
+
+```
+
+```{r}
+# let's not forget the "parents" dataset
+parents <- dedup %>%
+  filter(cand_parent == TRUE)
+
+father_counts <- pedigree %>%
+  group_by(father) %>%
+  count() %>%
+  rename(parent = father)
+
+mother_counts <- pedigree %>%
+  group_by(mother) %>%
+  count() %>%
+  rename(parent = mother)
+
+parent_counts <- bind_rows(mother_counts, father_counts) 
+rm(mother_counts)
+rm(father_counts)
+
+parents %<>%
+  left_join(parent_counts, by = c("sample_id" = "parent")) %>%
+  rename(tlf = n) %>%
+  mutate(tlf = replace_na(tlf, 0))
+
+rm(parent_counts)
+```
+
+
+```{r}
+# we will also rely heavily on the age at maturity dataset from the main project, let's make that R object here too
+aam_data <- pedigree_meta %>%
+  mutate(parent_year = (coalesce(father_year, mother_year))) %>%
+  filter(!(is.na(parent_year))) %>%
+  mutate(age = as.numeric(offspring_year) - as.numeric(parent_year)) %>%
+  mutate(age = as.factor(age), offspring_year = as.factor(offspring_year)) 
+
+```
+
+```{r}
+# we also use the "mate pair" dataset, we will create this R object here as well
+
+mate_pair <- pedigree_meta %>%
+  filter(assn_type == "pair", parent_year < 2016, parent_year > 2009) %>%
+  left_join(select(parents, sample_id, origin, tlf), by = c("father" = "sample_id")) %>%
+  rename(father_origin = origin, father_tlf = tlf) %>%
+  left_join(select(parents, sample_id, origin, tlf), by = c("mother" = "sample_id")) %>%
+  rename(mother_origin = origin, mother_tlf = tlf) %>%
+  mutate(cross = case_when(mother_origin == "NOR" & father_origin == "HOR" ~ "NxH",
+                           mother_origin == "HOR" & father_origin == "NOR" ~ "HxN",
+                           mother_origin == "NOR" & father_origin == "NOR" ~ "NxN",
+                           mother_origin == "HOR" & father_origin == "HOR" ~ "HxH"))
+mate_pair %<>%
+  mutate(year_f = as.factor(parent_year),
+         cross_f = as.factor(cross)) %>%
+  mutate(cross_f = fct_relevel(cross_f, "NxN",   "HxN", "NxH","HxH"))
+
+```
+
+## Primary Dataset
+
+Now let's assemble and summarize the focal dataset for this project. 
+
+We must collect metadata and TLF, filter down to just our target individuals and assign the "generation" variable. We also know a priori that length, sex, and release date are all associated with TLF, so we will need to exclude any individuals where we do not know this information (n = 15, 12 of which are 2014 NOR immigrants). 
+
+```{r}
+pedigree_origin <- pedigree %>%
+  left_join(select(dedup, sample_id, origin), by = c("mother" = "sample_id")) %>%
+  rename(mother_origin = origin) %>%
+  left_join(select(dedup, sample_id, origin), by = c("father" = "sample_id")) %>%
+  rename(father_origin = origin)
+
+F12_mmdata <- dedup %>%
+  filter(year> 2011 , year < 2016, cand_parent == TRUE) %>%
+  left_join(pedigree_origin, by = c("sample_id" = "offspring_sample_id")) %>%  # attach parents and their origin 
+  mutate(generation = case_when(origin == "HOR" ~ "HOR",
+                                mother_origin == "HOR" & father_origin == "HOR" ~"F1",
+                                mother_origin == "NOR" & father_origin == "NOR" ~"F2", #see note 1 above for why this makes sense
+                                mother == "none" & father == "none" ~ "NORimmigrant",
+                                mother == "none" | father == "none" ~ "single_parentage",
+                                mother_origin == "HOR" & father_origin == "NOR" ~"HORxNOR",
+                                mother_origin == "NOR" & father_origin == "HOR" ~"NORxHOR")) %>%
+  left_join(select(parents, sample_id, tlf) ) %>%
+  mutate(jday = as.numeric(format(date, "%j"))) %>% #julian day in this case: days since the first day of the year
+  mutate(jday_c = scale(jday, scale = F), #center the julian day to help with convergence
+         sex = as.factor(sex),
+         release= as.factor(release),
+         year = as.factor(year),
+         group = as.factor(paste(date, release, type))) %>%
+  filter(length != 0, !(is.na(length))) %>%
+  filter(generation %in% c("HOR", "F1", "NORimmigrant")) %>%
+  mutate(generation  = fct_relevel(generation, c("HOR", "F1", "NORimmigrant")))
+```
+
+Great, now let's summarise sample size.
+```{r}
+kable(F12_mmdata %>%
+  count(year, generation) %>%
+  pivot_wider(id_cols = year, names_from = generation, values_from = n), caption = "Sample Size for the main dataset") %>% 
+  kable_classic(full_width = F, html_font = "Arial")
+```
+
+Note that we do not have great balance between the years. Most F1s and NOR immigrants come from 2012. We know from the evaluation of the reintroduction that TLF varies between years, so we will need to be careful to investigate collinearity and other interactions between the year, generation and TLF variables. 
+
+# TLF Variation
+
+Our principal question is whether there are fitness differences between HORs, F1s and NORimmigrants. To address this question we will fit a generalized linear model mixed on TLF. In addition to the effect of generation we will also explore covariates that we found were associated with TLF in the McKenzie River reintroduction. These include release length, sex, and julian day of release (fit as a linear continuous variable). We also fit year as fixed effect (too few to fit as random like we do in the evaluation: n_year = 4). Finally we will include release group as a random effect. A release group is defined as set of individuals released together at the same location on the same day. Previous analyses have suggested that there is substantial variation in TLF among release groups.
+
+## EDA 
+
+Even though we have already done this work for the full dataset, we will conduct a separate exploratory data analysis prior to fitting a model. This will include a careful examination of collinearity, identifying the correct distribution and link function for modeling, and model validation.
+
+### Predictors
+
+Let's explore our predictor variables.
+
+```{r}
+##################################################################
+##################################################################
+# this is a function to quickly produce biplots between our variables
+
+panel.cor <- function(x, y, digits=1, prefix="", cex.cor = 6)
+{
+  usr <- par("usr"); on.exit(par(usr))
+  par(usr = c(0, 1, 0, 1))
+  r1=cor(x,y,use="pairwise.complete.obs")
+  r <- abs(cor(x, y,use="pairwise.complete.obs"))
+  txt <- format(c(r1, 0.123456789), digits=digits)[1]
+  txt <- paste(prefix, txt, sep="")
+  if(missing(cex.cor)) { cex <- 0.9/strwidth(txt) } else {
+     cex = cex.cor}
+  text(0.5, 0.5, txt, cex = cex * r)
+}
+
+##################################################################
+panel.smooth2=function (x, y, col = par("col"), bg = NA, pch = par("pch"),
+                        cex = 1, col.smooth = "black", span = 2/3, iter = 3, ...)
+{
+  points(x, y, pch = pch, col = col, bg = bg, cex = cex)
+  ok <- is.finite(x) & is.finite(y)
+  if (any(ok))
+    lines(stats::lowess(x[ok], y[ok], f = span, iter = iter),
+          col = 1, ...)
+}
+
+##################################################################
+panel.lines2=function (x, y, col = par("col"), bg = NA, pch = par("pch"),
+                       cex = 1, ...)
+{
+  points(x, y, pch = pch, col = col, bg = bg, cex = cex)
+  ok <- is.finite(x) & is.finite(y)
+  if (any(ok)){
+    tmp=lm(y[ok]~x[ok])
+    abline(tmp)}
+}
+
+##################################################################
+panel.hist <- function(x, ...)
+{
+  usr <- par("usr"); on.exit(par(usr))
+  par(usr = c(usr[1:2], 0, 1.5) )
+  h <- hist(x, plot = FALSE)
+  breaks <- h$breaks; nB <- length(breaks)
+  y <- h$counts; y <- y/max(y)
+  rect(breaks[-nB], 0, breaks[-1], y, col="white", ...)
+}
+
+
+F12_mmdata %>%
+  select(tlf, sex, jday,  generation, year) %>%
+  #mutate(tlf = log(tlf)) %>%
+  pairs(., lower.panel = panel.cor, diag.panel = panel.hist, upper.panel = panel.smooth2)
+```
+
+In the figure above a histogram of each variable is along the diagonal. For the unlabeled factor vairables the levels are (in order) Sex(F, M), Generation (HOR, F1, NORimmigrant).
+
+There are a handful of relationships that jump our even with a simple correlation. The most potentially problematic, as we already noted, is the relationship between generation and year. Generation is also weakly related to release day and sex. We will need to explore these in more detail than with this simple figure. 
+
+__Generation x Release Day__
+Let's explore the relationship between release day and generation.
+
+```{r}
+
+ggplot(data = F12_mmdata)+geom_density(aes(x = jday, fill = generation, color = generation), alpha = 0.4)+theme_bw()+scale_fill_manual(values = c("#4477AA", "#CCBB44", "#AA3377"))+scale_color_manual(values = c("#4477AA", "#CCBB44", "#AA3377"))+xlab("Julian Day of Release")
+
+```
+
+Yes, there is a relationship between generation and release day. Fortunately there is a lot of overlap so our model may be able to parse the effects and collinearity will not prevent us from making clear inferences.
+
+__Generation x Sex__
+```{r}
+
+ggplot(data = F12_mmdata)+geom_bar(aes(x = generation, fill = sex), position = "fill")+scale_fill_bright()+theme_bw()+ylab("Proportion")
+
+```
+
+HORs tend to be female biased relative to F1s and NORimmigrants. We will also need to be thoughtful about the relationship between these variables and TLF
+
+
+
+### Distribution
+
+In all recent pedigree work on UWR reintroductions, a negative binomial distribution was a better fit to the data and/or more parsimonious fit than Poisson, QuasiPoisson, and various zero-inflation/hurdle models. However the zero-inflation and negative binomial models were pretty  close. Let's re-evaluate given that these zero-inflated models may perform better on this data subset. 
+
+For each of the two approaches (negbin and zero-inlfated negbin (zinb)) we'll conduct model selection then we'll compare the optimal models. Most of the model selection procedures I already have running won't work well on the zero-inflated model so we'll just follow the reccomendations of Zuur et al and rely on backwards stepwise Wald Tests, treating each component (zeros and conditional) separately. We will also ignore the random effects for now.  
+
+```{r}
+negbin <- glmmTMB(tlf ~ generation + length + sex+ jday_c+ year, data = F12_mmdata, family = nbinom2)
+summary(negbin)
+
+# drop sex (p = 0.56, wald test)
+negbin <- glmmTMB(tlf ~ generation + length + jday_c+ year , data = F12_mmdata, family = nbinom2)
+summary(negbin)
+
+# release day is marginal, let's keep it for now
+```
+
+```{r}
+zinb <- glmmTMB(tlf ~ jday_c + sex + generation +length +year , zi = ~ jday_c + sex + generation +length +year , data = F12_mmdata, family = nbinom2)
+summary(zinb)
+
+#sex and length have p-values ~ 1 in the zero part of the model, remove
+zinb <- glmmTMB(tlf ~ jday_c + sex + generation +length +year , zi = ~ jday_c + generation  +year , data = F12_mmdata, family = nbinom2)
+summary(zinb)
+
+# next out is sex in the conditional
+zinb <- glmmTMB(tlf ~ jday_c + generation +length +year , zi = ~ jday_c + generation  +year , data = F12_mmdata, family = nbinom2)
+summary(zinb)
+
+# now julian day in the conditional
+zinb <- glmmTMB(tlf ~  generation +length +year , zi = ~ jday_c + generation  +year , data = F12_mmdata, family = nbinom2)
+summary(zinb)
+
+# this looks pretty good
+```
+
+Final ZINB model by backward stepwise selection using Wald Tests is pretty interesting. The conditional part of the model includes an effect of generation, length, and year, while the zeros include generation day and year. At face value this suggests that release day affects fitness through the likelihood of reproducing at all , whereas length only matters if you do manage to spawn. This is the basic expectation for how this should work if we assume the zero part of the model largely predicts propensity for PSM whereas the conditional part predicts TLF once you do spawn,
+
+Now let's compare the two
+
+First we'll look at model validation
+
+```{r}
+simulateResiduals(negbin, plot = TRUE)
+simulateResiduals(zinb, plot = TRUE)
+```
+
+Both model fits look good using simulated residuals.
+
+Now let's compare using AIC, BIC and likelihood ratio tests (the negbin model is nested in teh zinb model)
+
+```{r}
+anova(negbin, zinb)
+```
+
+ZINB best by AIC (delta AIC ~ 20) and likelihood ratio test, but worse by BIC. 
+
+So the more complex ZINB model probably provides a better fit to the data. But what do we get for all this added model complexity? Let's examine the differences in the model fit on the response scale (TLF) using a hanging rootogram.
+
+```{r}
+# refit the final models with a different software to look at rootograms
+negbin <- glm.nb(tlf ~  generation +length+ jday_c+year, data = F12_mmdata)
+
+#rescale jday since this software has convergance issues
+F12_mmdata %<>% mutate(jday_cs = scale(jday_c))
+zinb <- zeroinfl(tlf ~  generation +length +year | jday_cs + generation +year , data = F12_mmdata, dist = "negbin")
+
+rootogram(negbin, main = "Negative Binomial")
+rootogram(zinb, main = "Zero-Inflated Negative Binomial")
+```
+
+These are nearly equivalent fits at all TLFs except 1. To me this suggests there isn't really a sever zero-inflation problem and the same process drives fitness at both zeros and non-zeros.
+
+Let's think about it this way, the benefit of the more complex model is the difference in inference between zero generating and non-zero generation processes (i.e. jday influences PSM whereas length influences TLF once you successfully survive to spawning time). Are we so confident in our model selection procedure that we should stake an entire conclusion on it? How much better is a model with exactly the same variables on both sides of the conditional/zero portions with respect to information/likelihood(AIC, LRT)
+
+```{r}
+
+zinb <- glmmTMB(tlf ~  generation +length +year , zi = ~ jday_c + generation  +year , data = F12_mmdata, family = nbinom2)
+
+# here fit a model where the zero and conditional effects are the same and compare 
+zinb2 <- glmmTMB(tlf ~ jday_c+ generation +length +year, zi = ~ jday_c + generation +length +year  , data = F12_mmdata, family = nbinom2)
+
+# and compare
+AIC(zinb, zinb2)
+anova(zinb, zinb2)
+```
+
+Delta AIC is ~4, fails to be different in likelihood ratio test. This suggests the more complex model isn't worth it. Instead we should defer to the negbin model. There is nothing wrong with model fit, it is nearly as good of a fit as the zinb, and it is much easier to get our central message across without having to explain the added complexity of model selection in a hurdle/zero-inflation model.
+
+### Collinearity
+
+Great, we know we want to use a negative binomial, and we know which variables might be collinear. Let's see if there is enough information to parse the effects of year, generation and sex on TLF. 
+
+We will do this using the VIF (or more specifically GVIF^(1/2*df)).
+
+```{r}
+# fit beyond optimal model (all possible fixed effect)
+beyond_opt <- glm.nb(tlf ~ generation + length + sex+ jday_c+ year , data = F12_mmdata)
+vif(beyond_opt)
+```
+
+Very low GVIFs! This is a relief considering the relationship between release day/generation, and year/generation. Despite these relationships, there is limited correlation between the estimates of their effects and we are likely to have sufficient power/information to identify their independent relationships with TLF.
+
+We are clear to move on to model selection.
+
+## Model Selection and Validation
+
+Let's conduct model selection.
+
+First we will examine the random effect structure, using REML
+```{r}
+beyond_opt_mm <- glmmTMB(tlf ~ generation + length + sex+ jday_c+ year + (1| group ) , data = F12_mmdata, family = nbinom2, REML = TRUE) 
+beyond_opt <- glmmTMB(tlf ~ generation + length + sex+ jday_c+ year  , data = F12_mmdata, family = nbinom2, REML = TRUE)
+
+AIC(beyond_opt_mm, beyond_opt)
+BIC(beyond_opt_mm, beyond_opt)
+
+```
+
+Mixed model is a better performer. We will now switch to model selection for the fixed effect structure and fit using ML. The method is backward stepwise selection using likelihood ratio tests, and a cutoff of p = 0.05.
+
+```{r}
+beyond_opt_mm <- glmmTMB(tlf ~ generation + length + sex+ jday_c+ year + (1| group ) , data = F12_mmdata, family = nbinom2) 
+drop1(beyond_opt_mm, test = "Chisq") 
+
+#drop sex (p value = 0.63)
+mm_f12 <- glmmTMB(tlf ~ generation + length +  jday_c+ year + (1| group ) , data = F12_mmdata, family = nbinom2) 
+drop1(mm_f12, test = "Chisq") 
+
+# Day of release only marginally improves model fit (delta AIC = 1.8, LRT p value = 0.053). Let's drop it.
+mm_f12 <- glmmTMB(tlf ~ generation + length +   year + (1| group ) , data = F12_mmdata, family = nbinom2) 
+drop1(mm_f12, test = "Chisq") 
+```
+
+
+
+Now let's check the fit using simulated residuals.
+
+
+```{r}
+simulateResiduals(mm_f12, plot = TRUE)
+```
+
+Model fit is excellent.
+
+## Final Model
+
+```{r}
+summary(mm_f12)
+```
+
+Generation (F0, F1, F2 and NORimmigrant) and year (fixed effect factor four years) and length significantly improve the fit to the data according to LRT, AIC and Wald tests.
+
+Let's look at the predicted effects
+
+```{r}
+
+eff1 <- predictorEffect("generation", mm_f12)
+effdf <- as.data.frame(eff1)
+effdf$generation <- factor(effdf$generation, levels=c("HOR", "F1", "NORimmigrant")) # relevel the genertions for a nicer plot
+
+
+ggplot(data = effdf, aes(x = (generation), y = fit))+ 
+  geom_point(position=position_dodge(width=0.3), size = 3) + 
+  geom_errorbar(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.3), width = 0.1)+ylab("TLF")+xlab("Generation")+theme_bw()
+```
+
+Let's do some post hoc testing
+
+```{r}
+# we'll use emmeans for this
+em <- emmeans(mm_f12, "generation")
+contrast(em, "pairwise", adjust = "Tukey", type = "response")
+```
+
+The novel finding here is that both NORimmigrants and F1s have greater fitness than HORs, but do not differ from one another.
+
+# Demography Differences in Offspring
+
+We found that HORs, F1s and NOR immigrants vary in the number of adult offspring they produce, are there other differences in their offspring, such as age at maturity?
+
+```{r}
+pedigree_long <- pedigree %>%
+  pivot_longer(-offspring_sample_id, names_to = "parent_sex", values_to = "parent")
+
+off_age_F12 <- F12_mmdata %>%
+  left_join(select(pedigree_long, -parent_sex), by = c("sample_id" = "parent")) %>%
+  left_join(select(aam_data, offspring_sample_id, age)) %>%
+  rename(offspring_age = age) %>%
+  filter(!is.na(offspring_sample_id))
+
+ggplot(off_age_F12)+geom_bar(aes(x = generation, fill = offspring_age))+scale_fill_viridis_d()+theme_bw()+xlab("parent")
+
+#also make proportional
+ggplot(off_age_F12)+geom_bar(aes(x = generation, fill = offspring_age), position = "fill")+scale_fill_viridis_d()+theme_bw()+xlab("parent")+ylab("proportion")
+
+```
+
+Yes, offspring of HOR parents tend to be younger than those F1s or NOR immigrants, but is this difference stronger than what we would expect by chance alone. 
+
+Age at maturity is a count variable, but it could arguably be modeled as a continuous variable as well. Let's be sure to do it the "right" way here first. 
+
+## AAM GLM
+
+First we should note that there are very few age-3 or age-6 offspring. If we remove these individuals, we can fit a binomial model. In other words we will parameterize a model that predicts the probability for the different groups to produce offspring that return at age 5 vs age 4. 
+
+### EDA and Modeling
+
+Just like with the TLF we will be thoughtful about how to combine data across years. First let see if there is a relationship across years that we need to be concerned with.
+
+```{r}
+ggplot(off_age_F12)+geom_bar(aes(x = year, fill = offspring_age))+scale_fill_viridis_d()+theme_bw()+xlab("parent")+ylab("proportion")
+
+```
+
+Yes, 2015 is mostly age 4. We should be careful to look for multicollinearity and interactions.
+
+First let's look at the relationship between year and generation and assess multicollinearity. We will assess with the GVIF.
+
+```{r}
+off_age_F12 %<>%
+  filter(offspring_age %in% c("4", "5")) 
+
+select(off_age_F12, generation, year, offspring_age) %>%
+  pairs(., lower.panel = panel.cor, diag.panel = panel.hist, upper.panel = panel.smooth2)
+  
+gen_age_ind <- glm(offspring_age ~ generation + year , family = "binomial", data = off_age_F12)
+# is there collinearity issue (e.g. does the impact of year and generation interact)
+vif(gen_age_ind)
+
+```
+
+We know there's some balance issues among year already (most NOR immigrants come from 2012) and this shows up in the biplot. But it doesn't produce multicollinearity issues (GVIF is very small)
+
+The next step is to see if there is an interaction
+
+```{r}
+gen_age_ind <- glm(offspring_age ~ generation * year , family = "binomial", data = off_age_F12)
+drop1(gen_age_ind, test = "Chisq")
+```
+
+LRT suggests not ( p = 0.1, delta AIC ~ 1), so I think we are good to include year at the start of model selection as a fixed effect. 
+
+```{r}
+gen_age_ind <- glm(offspring_age ~ generation + year , family = "binomial", data = off_age_F12)
+drop1(gen_age_ind, test = "Chisq")
+# drop year, doesn't show up as significant
+
+gen_age_ind <- glm(offspring_age ~ generation , family = "binomial", data = off_age_F12)
+drop1(gen_age_ind, test = "Chisq")
+```
+
+Final model is just generation. Let's validate, summarise the fit and do some post hoc tests.
+```{r}
+simulateResiduals(gen_age_ind , plot = TRUE)
+summary(gen_age_ind)
+
+em <- emmeans(gen_age_ind, "generation", type = "response")
+contrast(em, "pairwise", type = "response")
+#ggplot(data = as.data.frame(em))+geom_pointrange(aes(x = generation, y = prob, ymin = asymp.LCL, ymax = asymp.UCL ))+theme_bw()+ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring")+xlab("Generation")
+
+
+
+eff1 <- predictorEffect("generation", gen_age_ind)
+effdf <- as.data.frame(eff1)
+effdf$generation <- factor(effdf$generation, levels=c("HOR", "F1", "NORimmigrant")) # relevel the genertions for a nicer plot
+
+
+ggplot(data = effdf, aes(x = (generation), y = fit))+ 
+  geom_point(position=position_dodge(width=0.3), size = 3) + 
+  geom_errorbar(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.3), width = 0.1)+ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring")+xlab("Generation")+theme_bw()
+```
+
+We have a different pattern in this variable (aam of offspring), compared to TLF. F1s produce more age 5 offspring than HORs, but the confidence interval for the NOR immigrants overlaps both F1s and HORs. 
+

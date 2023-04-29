@@ -18,7 +18,6 @@ __(3) Notes__: Scratch notebooks, meeting minutes, miscellenia
 __(4) Manuscript__: Drafts and revisions of manuscript  
 
 
-
 # How to Reproduce Results
 
 If you're looking to reproduce results, run the code on new data, pull some figures, or get into the weeds and play with the code here are some tips to make this easy. 
