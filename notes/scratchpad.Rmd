@@ -1,0 +1,180 @@
+---
+title: "Renaturalization Scratch Pad"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+---
+
+```{r, message = FALSE, warning=FALSE}
+require(kableExtra)
+require(gt)
+require(gtsummary)
+require(tidyverse)
+require(magrittr)
+```
+
+# Colony vs Final Pedigree
+
+One of the central concerns to address before moving forawrd with the manuscript is to evaluate type II error. 
+
+My concern is that inference of the consensus (final) pedigree may prioritize limiting type I error at the expense of power. This is appropriate for the main manuscript, but may lead to some NOR descendents being misidentified as NOR immigrants and reducing our ability to detect fitness differences between these two groups. Specifically the requirement that no more than 1 mismatch per parent-offspring pair for an assignment may lead to more NOR immigrants in the dataset than the true value.
+
+Simulation results (Harrison 2013) suggest that given the information content of our dataset Colony should have very low type II error rates. So a quick back of the napkin analysis of type II error in our pedigree is to compare the assignment rate in the Colony pedigree to the consensus pedigree. 
+
+We will ask for disagreements in between the colony and final pedigree is there a bias towards non-assignment (i.e. immigrant) in the final pedigree relative to the colony pedigree
+
+```{r}
+# first we ran the full parentage notebook to get those object into the environment. 
+
+# 
+ped_comp <- full_colony %>%
+  mutate(assn_type_colony = case_when(is.na(mother_year) & is.na(father_year) ~ "immigrant",
+                               TRUE ~ "descendant"))
+
+ped_comp2 <- pedigree %>%
+  mutate(assn_type_final = case_when((mother == "none") & (father == "none") ~ "immigrant",
+                               TRUE ~ "descendant"))
+ped_comp %<>%
+  left_join(ped_comp2 )
+
+ped_comp %>%
+  count(assn_type_colony, assn_type_final)
+```
+
+The majority of assignments agree (94%) between the colony and final pedigrees. 
+
+For the 6% of disagreements between the final and colony pedigree, there is an approximately equal proportion of descendant -> immigrant (colony -> final, n = 83) and immigrant <- descendant (n = 96) disagreements. This suggests there is not a strong systematic bias towards type II error in the final pedigree compared to the colony pedigree.
+
+# Hurdle/ZINB
+
+we should probably start completely from scratch for modelling, including an exploration of different distributions, VIFs, validation etc. Currently the modeling choices are based on previous work using the full dataset, we have assumed that the same findings hold true for a subset of the data (HORs, F1s and immigrants, 2012-2015), but it would be good to start from scratch even if just for reproducibility (all analyses for this project self contained).
+
+Here we will walk through model selection for three different different distributions: Poisson, NegBin and Zero-Inflated NegBin. 
+
+```{r}
+pois <- glmmTMB(tlf ~ jday_c + sex + generation +length +year, data = F12_mmdata, family = poisson)
+summary(pois)
+drop1(pois, test = "Chisq")
+
+pois <- glmmTMB(tlf ~ jday_c + generation +length +year, data = F12_mmdata, family = poisson)
+summary(pois)
+drop1(pois, test = "Chisq")
+```
+
+```{r}
+negbin <- glmmTMB(tlf ~ jday_c + sex + generation +length +year, data = F12_mmdata, family = nbinom2)
+summary(negbin)
+drop1(negbin, test = "Chisq")
+
+negbin <- glmmTMB(tlf ~ jday_c + generation +length +year, data = F12_mmdata, family = nbinom2)
+summary(negbin)
+drop1(negbin, test = "Chisq")
+
+negbin <- glmmTMB(tlf ~  generation +length +year, data = F12_mmdata, family = nbinom2)
+summary(negbin)
+drop1(negbin, test = "Chisq")
+```
+
+The effect of release day is marginal in the negbin model selection, let's leave it in to make the comparisons with poisson easier. 
+
+```{r}
+negbin <- glmmTMB(tlf ~  jday_c +generation +length +year, data = F12_mmdata, family = nbinom2)
+```
+
+
+
+```{r}
+zinb <- glmmTMB(tlf ~ jday_c + sex + generation +length +year, zi = ~ jday_c + sex + generation +length +year  , data = F12_mmdata, family = nbinom2)
+summary(zinb)
+
+zinb <- glmmTMB(tlf ~ jday_c + sex + generation +length +year, zi = ~ jday_c + generation +length +year  , data = F12_mmdata, family = nbinom2)
+summary(zinb)
+
+zinb <- glmmTMB(tlf ~ jday_c + sex + generation +length +year, zi = ~ jday_c + generation  +year  , data = F12_mmdata, family = nbinom2)
+summary(zinb)
+
+zinb <- glmmTMB(tlf ~ jday_c + generation +length +year, zi = ~ jday_c + generation  +year  , data = F12_mmdata, family = nbinom2)
+summary(zinb)
+
+zinb <- glmmTMB(tlf ~  generation +length +year, zi = ~ jday_c + generation  +year  , data = F12_mmdata, family = nbinom2)
+summary(zinb)
+```
+
+Final ZINB model by backward stepwise selection using Wald Tests is pretty interesting. The conditional part of the model includes an effect of generation, length, and year, while the zeros include generation day and year. At face value this suggests that release day affects fitness through the likelihood of reproducing at all , whereas length only matters if you do manage to spawn. This is the basic expectation for how this should work if we assume the zero part of the model largely predicts propensity for PSM whereas the conditional part predicts TLF once you do spawn,
+
+Now let's compare
+
+First we'll look at model validation
+
+```{r}
+simulateResiduals(pois, plot = TRUE)
+simulateResiduals(negbin, plot = TRUE)
+simulateResiduals(zinb, plot = TRUE)
+```
+
+
+```{r}
+AIC(pois, negbin, zinb)
+BIC(pois, negbin, zinb)
+anova(pois, negbin, zinb)
+
+# refit the final models with a different software to look at rootograms
+
+pois <- glm(tlf ~  generation +length +year, data = F12_mmdata, family = "poisson")
+negbin <- glm.nb(tlf ~  generation +length +year, data = F12_mmdata)
+
+#rescale jday since htis software has convergance issues
+F12_mmdata %<>% mutate(jday_cs = scale(jday_c))
+zinb <- zeroinfl(tlf ~  generation +length +year | jday_cs + generation +year , data = F12_mmdata, dist = "negbin")
+
+rootogram(pois, main = "Poisson")
+rootogram(negbin, main = "Negative Binomial")
+rootogram(zinb, main = "Zero-Inflated Negative Binomial")
+```
+
+Poisson fit is terrible, overdispersion and outliers. Plus way worse from an information perspective (delta AIC compared to best model > 200, delta BIC ~100). This fits our expectations from before.
+
+What about zinb vs negbin. ZINB best by AIC (delta AIC ~ 20) and likelihood ratio test, but worse by BIC. There's a very slight difference in the rootograms, mostly in its prediction of TLF = 1 individuals. 
+
+So the more complex ZINB model probably provides a better fit to the data. But what do we get for all this added model complexity? Let's take a look at how the ZINB model would change the interpretation of the data
+```{r}
+
+# refit ysing our prefered GLMMTMB
+negbin <- glmmTMB(tlf ~  +generation +length +year, data = F12_mmdata, family = nbinom2)
+zinb <- glmmTMB(tlf ~  generation +length +year, zi = ~ jday_c + generation  +year  , data = F12_mmdata, family = nbinom2)
+
+summary(negbin)
+summary(zinb)
+
+
+eff1 <- predictorEffect("generation", zinb)
+effdf <- as.data.frame(eff1)
+effdf$generation <- factor(effdf$generation, levels=c("HOR", "F1", "NORimmigrant")) # relevel the genertions for a nicer plot
+
+
+ggplot(data = effdf, aes(x = (generation), y = fit))+ 
+  geom_point(position=position_dodge(width=0.3)) + 
+  geom_errorbar(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.3), width = 0.1)+ylab("TLF")+xlab("Generation")+theme_bw()
+```
+
+```{r}
+# we'll use emmeans for this
+em <- emmeans(zinb, "generation")
+contrast(em, "pairwise", adjust = "Tukey", type = "response")
+```
+
+ZINB results for the main question qualitatively the same as NegBin. The only difference in interpretation is the difference in variables retained in the conditional and zero portions of the final model and the additional insights this provides. But how much better are these models than the equivalent conditional/zero variables
+
+```{r}
+zinb2 <- glmmTMB(tlf ~ jday_c+ generation +length +year, zi = ~ jday_c + generation +length +year  , data = F12_mmdata, family = nbinom2)
+
+AIC(zinb, zinb2)
+anova(zinb, zinb2)
+```
+
+Delta AIC is ~4, fails to be different in likelihood ratio test. I wouldn't stake a whole discussion on the difference between these model fits (ZINB and ZINB2 above). Instead we should defer to the negbin model. The qualitative interpretation of the central results are the same, there is nothing wrong with model fit, it is nearly as good of a fit as the zinb, and it is much easier to get our central message across without having to explain the added complexity of model selection in a hurdle/zero-inflation model.
+

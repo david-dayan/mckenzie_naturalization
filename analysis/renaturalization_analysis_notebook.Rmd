@@ -44,7 +44,7 @@ This notebook relies on a pedigree of all Chinook Salmon released above Cougar D
 
 Nearly all (98%) Chinook salmon on the South Fork McKenzie express an age at maturity of 4 - 5 years, with approximately 2% returning at age 3 or age 6. Therefore, our data data allow us to identify all offspring of salmon released above Cougar Dam in 2010 - 2014, and nearly all offspring of salmon released above Cougar Dam in 2015. From the offspring's perspective, we sample all possible parents of potential offspring that return from 2013 - 2020, and nearly all (98%) parents of potential offspring that returned in 2012. 
 
-Therefore for adults that return and are released above the dam from 2012 - 2015, we know both their parentage and how many returing adult offspring they produce. 
+Therefore for adults that return and are released above the dam from 2012 - 2015, we know both their parentage (i.e. who are their parents) and how many returing adult offspring they produce. 
 
 ## Definition of Variables
 
@@ -57,16 +57,18 @@ For each candidate parent (any salmon released above the dam), we define total l
 This analysis is based on comparisons of TLF between three groups of candidate parent salmon released above Cougar Dam from 2012 - 2015:  
 
 __(1) Hatchery/HOR:__ These are hatchery-origin fish from the McKenzie spring Chinook salmon hatchery program, that are released above the dam.  
-__(2) F1:__ We define F1s as the first generation wild born offspring of hatchery salmon released above the dam. Both of their parents are HOR. 
-__(3) NORimmigrant:__ We define NOR immigrant salmon as any salmon without an adipose clip that does not assign to a parent previously released above the dam. These salmon are presumed to be produced below the dam or elsewhere (no parentage assignment), and to also be wild born (no adipose clip). In the manuscript we will refer to these simply as NOR, but for the notebook we will label as NORimmigrant to avoid confusion with other unclipped fish.   
+__(2) F1:__ We define F1s as the first generation wild born offspring of hatchery salmon released above the dam. Both of their parents are HOR.   
+__(3) NORimmigrant:__ We define NOR immigrant salmon as any salmon without an adipose clip that does not assign to a parent previously released above the dam. These salmon are presumed to be produced below the dam or elsewhere (no parentage assignment), and to also be wild born (no adipose clip, McKenzie clip rate > 99%). In the manuscript we will refer to these simply as NOR, but for the notebook we will label as NORimmigrant to avoid confusion with other unclipped fish.   
 
 We refer to this variable as __generation__ in this notebook
 
-__Other fish__  
+__Other fish__   
 There are many other individuals in the pedigree that do not fall into one of these three groups:
 * Individuals that assign to a single parent  
 * Individuals from mixed mate pairs (e.g. HORxF1 parents)  
 * Individuals that are never released above the dam and therefore are not candidate parents and have no TLF estimate (e.g. F1 salmon that are recycled downstream of the dam and never return to be released above the dam)  
+
+To keep our conclusions as clear as possible we will ignore these other individuals and focus solely on HORs, F1s and NOR immigrants.
 
 # Data 
 
@@ -188,7 +190,7 @@ Now let's assemble and summarize the focal dataset for this project.
 
 We must collect metadata and TLF, filter down to just our target individuals and assign the "generation" variable. We also know a priori that length, sex, and release date are all associated with TLF, so we will need to exclude any individuals where we do not know this information (n = 15, 12 of which are 2014 NOR immigrants). 
 
-```{r}
+```{r, message=FALSE, warning=FALSE}
 pedigree_origin <- pedigree %>%
   left_join(select(dedup, sample_id, origin), by = c("mother" = "sample_id")) %>%
   rename(mother_origin = origin) %>%
@@ -229,7 +231,7 @@ Note that we do not have great balance between the years. Most F1s and NOR immig
 
 # TLF Variation
 
-Our principal question is whether there are fitness differences between HORs, F1s and NORimmigrants. To address this question we will fit a generalized linear model mixed on TLF. In addition to the effect of generation we will also explore covariates that we found were associated with TLF in the McKenzie River reintroduction. These include release length, sex, and julian day of release (fit as a linear continuous variable). We also fit year as fixed effect (too few to fit as random like we do in the evaluation: n_year = 4). Finally we will include release group as a random effect. A release group is defined as set of individuals released together at the same location on the same day. Previous analyses have suggested that there is substantial variation in TLF among release groups.
+Our principal question is whether there are fitness differences between HORs, F1s and NORimmigrants. To address this question we will fit a generalized linear model mixed on TLF. In addition to the effect of generation we will also explore covariates that we found were associated with TLF in the McKenzie River reintroduction. These include release length, sex, and julian day of release (fit as a linear continuous variable). We have some priors that suggest we should also explore some interactions: a sex * generation interaction and a sex * length interaction. We also fit year as fixed effect (too few to fit as random like we do in the evaluation: n_year = 4). Finally we will include release group as a random effect. A release group is defined as set of individuals released together at the same location on the same day. Previous analyses have suggested that there is substantial variation in TLF among release groups, and the model fit benefits from the shrinkage associated with including release group.
 
 ## EDA 
 
@@ -292,21 +294,21 @@ panel.hist <- function(x, ...)
 
 
 F12_mmdata %>%
-  select(tlf, sex, jday,  generation, year) %>%
+  select(tlf, sex, jday,  generation, year, length) %>%
   #mutate(tlf = log(tlf)) %>%
   pairs(., lower.panel = panel.cor, diag.panel = panel.hist, upper.panel = panel.smooth2)
 ```
 
 In the figure above a histogram of each variable is along the diagonal. For the unlabeled factor vairables the levels are (in order) Sex(F, M), Generation (HOR, F1, NORimmigrant).
 
-There are a handful of relationships that jump our even with a simple correlation. The most potentially problematic, as we already noted, is the relationship between generation and year. Generation is also weakly related to release day and sex. We will need to explore these in more detail than with this simple figure. 
+There are a handful of relationships that jump our even with a simple correlation. The most potentially problematic, as we already noted, is the relationship between generation and year. Generation is also weakly related to release day, sex and length. We will need to explore these in more detail than with this simple figure. 
 
-__Generation x Release Day__
+__Generation x Release Day__  
 Let's explore the relationship between release day and generation.
 
 ```{r}
 
-ggplot(data = F12_mmdata)+geom_density(aes(x = jday, fill = generation, color = generation), alpha = 0.4)+theme_bw()+scale_fill_manual(values = c("#4477AA", "#CCBB44", "#AA3377"))+scale_color_manual(values = c("#4477AA", "#CCBB44", "#AA3377"))+xlab("Julian Day of Release")
+ggplot(data = F12_mmdata)+geom_density(aes(x = jday, fill = generation, color = generation), alpha = 0.4)+theme_bw()+scale_fill_manual(values = c("#228833", "#CCBB44", "#AA3377"))+scale_color_manual(values = c("#228833", "#CCBB44", "#AA3377"))+xlab("Julian Day of Release")
 
 ```
 
@@ -321,11 +323,22 @@ ggplot(data = F12_mmdata)+geom_bar(aes(x = generation, fill = sex), position = "
 
 HORs tend to be female biased relative to F1s and NORimmigrants. We will also need to be thoughtful about the relationship between these variables and TLF
 
+__Generation x Length __
+```{r}
 
+ggplot(data = F12_mmdata)+geom_density(aes(x = length, fill = generation, color = generation), alpha = 0.4)+theme_bw()+scale_fill_manual(values = c("#228833", "#CCBB44", "#AA3377"))+scale_color_manual(values = c("#228833", "#CCBB44", "#AA3377"))+xlab("Length (cm)")
+
+anova(lm(length ~ generation + year, data = F12_mmdata))
+plot(emmeans(lm(length ~ generation + year, data = F12_mmdata), "generation", type = "response"))
+contrast(emmeans(lm(length ~ generation + year, data = F12_mmdata), "generation", type = "response"), "pairwise")
+
+```
+
+HORs are significantly smaller than both F1s and NORimmigrants. F1s and NOR immigrants are the same length. 
 
 ### Distribution
 
-In all recent pedigree work on UWR reintroductions, a negative binomial distribution was a better fit to the data and/or more parsimonious fit than Poisson, QuasiPoisson, and various zero-inflation/hurdle models. However the zero-inflation and negative binomial models were pretty  close. Let's re-evaluate given that these zero-inflated models may perform better on this data subset. 
+In all recent pedigree work on UWR reintroductions, a negative binomial distribution was a better fit to the data and/or more parsimonious fit than Poisson, QuasiPoisson, and various zero-inflation/hurdle models. However the zero-inflated negative binomial and negative binomial models were pretty close in performance. Let's re-evaluate given that the zero-inflated model may perform better on this data subset. 
 
 For each of the two approaches (negbin and zero-inlfated negbin (zinb)) we'll conduct model selection then we'll compare the optimal models. Most of the model selection procedures I already have running won't work well on the zero-inflated model so we'll just follow the reccomendations of Zuur et al and rely on backwards stepwise Wald Tests, treating each component (zeros and conditional) separately. We will also ignore the random effects for now.  
 
@@ -359,7 +372,7 @@ summary(zinb)
 # this looks pretty good
 ```
 
-Final ZINB model by backward stepwise selection using Wald Tests is pretty interesting. The conditional part of the model includes an effect of generation, length, and year, while the zeros include generation day and year. At face value this suggests that release day affects fitness through the likelihood of reproducing at all , whereas length only matters if you do manage to spawn. This is the basic expectation for how this should work if we assume the zero part of the model largely predicts propensity for PSM whereas the conditional part predicts TLF once you do spawn,
+Final ZINB model by backward stepwise selection using Wald Tests is pretty interesting. The conditional part of the model includes an effect of generation, length, and year, while the additional zeros include generation day and year. At face value this suggests that release day affects fitness through the likelihood of reproducing at all, whereas length only matters if you do manage to spawn. This is the basic expectation for how this should work if we assume the zero part of the model largely predicts propensity for pre-spawn mortality whereas the conditional part predicts TLF once you do spawn. 
 
 Now let's compare the two
 
@@ -394,9 +407,9 @@ rootogram(negbin, main = "Negative Binomial")
 rootogram(zinb, main = "Zero-Inflated Negative Binomial")
 ```
 
-These are nearly equivalent fits at all TLFs except 1. To me this suggests there isn't really a sever zero-inflation problem and the same process drives fitness at both zeros and non-zeros.
+These are nearly equivalent fits at all TLFs except 1. To me this suggests there isn't  a severe zero-inflation problem and the same processes might drive fitness at both zeros and non-zeros.
 
-Let's think about it this way, the benefit of the more complex model is the difference in inference between zero generating and non-zero generation processes (i.e. jday influences PSM whereas length influences TLF once you successfully survive to spawning time). Are we so confident in our model selection procedure that we should stake an entire conclusion on it? How much better is a model with exactly the same variables on both sides of the conditional/zero portions with respect to information/likelihood(AIC, LRT)
+Let's think about it this way, if both models offer similar explanatory power the benefit of the more complex model is additional inference between zero generating and non-zero generation processes (i.e. jday influences PSM whereas length influences TLF once you successfully survive to spawning time). Are we so confident in our model selection procedure that we should stake an entire conclusion on it? How much better is a model with exactly the same variables on both sides of the conditional/zero portions with respect to information/likelihood(AIC, LRT)
 
 ```{r}
 
@@ -410,11 +423,12 @@ AIC(zinb, zinb2)
 anova(zinb, zinb2)
 ```
 
-Delta AIC is ~4, fails to be different in likelihood ratio test. This suggests the more complex model isn't worth it. Instead we should defer to the negbin model. There is nothing wrong with model fit, it is nearly as good of a fit as the zinb, and it is much easier to get our central message across without having to explain the added complexity of model selection in a hurdle/zero-inflation model.
+Delta AIC is ~4, fails to be different in likelihood ratio test. This suggests the more complex model isn't worth it. Any decent results section would beed to consider both models above (with and without differences between zero and conditional sections).  
+Instead we should defer to the negbin model. There is nothing wrong with model fit, it is nearly as good of a fit as the zinb, and it is much easier to get our central message across without having to explain the added complexity of model selection in a hurdle/zero-inflation model.
 
 ### Collinearity
 
-Great, we know we want to use a negative binomial, and we know which variables might be collinear. Let's see if there is enough information to parse the effects of year, generation and sex on TLF. 
+Great, we know we want to use a negative binomial, and we know which variables might be collinear. Let's see if there is enough information to parse the effects of year, generation and sex on TLF. If we find strong collinearity then our power will be low, our estimates will have large SEs and the inferences we can draw will be limited.
 
 We will do this using the VIF (or more specifically GVIF^(1/2*df)).
 
@@ -424,7 +438,7 @@ beyond_opt <- glm.nb(tlf ~ generation + length + sex+ jday_c+ year , data = F12_
 vif(beyond_opt)
 ```
 
-Very low GVIFs! This is a relief considering the relationship between release day/generation, and year/generation. Despite these relationships, there is limited correlation between the estimates of their effects and we are likely to have sufficient power/information to identify their independent relationships with TLF.
+Very low GVIFs! This is a relief considering the relationship between release day/generation, length/generation and year/generation. Despite these relationships, there is limited correlation between the estimates of their effects and we are likely to have sufficient power/information to identify their independent relationships with TLF.
 
 We are clear to move on to model selection.
 
@@ -432,7 +446,7 @@ We are clear to move on to model selection.
 
 Let's conduct model selection.
 
-First we will examine the random effect structure, using REML
+First we will examine the random effect structure, using REML. There is only a single random effect (release group). So, here we compare a mixed model with release group to it's equivalent glm with no random effects.
 ```{r}
 beyond_opt_mm <- glmmTMB(tlf ~ generation + length + sex+ jday_c+ year + (1| group ) , data = F12_mmdata, family = nbinom2, REML = TRUE) 
 beyond_opt <- glmmTMB(tlf ~ generation + length + sex+ jday_c+ year  , data = F12_mmdata, family = nbinom2, REML = TRUE)
@@ -445,6 +459,16 @@ BIC(beyond_opt_mm, beyond_opt)
 Mixed model is a better performer. We will now switch to model selection for the fixed effect structure and fit using ML. The method is backward stepwise selection using likelihood ratio tests, and a cutoff of p = 0.05.
 
 ```{r}
+beyond_opt_mm <- glmmTMB(tlf ~ generation*sex + length+ sex* jday_c+ year + (1| group ) , data = F12_mmdata, family = nbinom2) 
+drop1(beyond_opt_mm, test = "Chisq") 
+
+#drop sex*release day interaction
+
+beyond_opt_mm <- glmmTMB(tlf ~ generation*sex + length + sex+ jday_c+ year + (1| group ) , data = F12_mmdata, family = nbinom2) 
+drop1(beyond_opt_mm, test = "Chisq") 
+
+#drop generation*sex interaction
+
 beyond_opt_mm <- glmmTMB(tlf ~ generation + length + sex+ jday_c+ year + (1| group ) , data = F12_mmdata, family = nbinom2) 
 drop1(beyond_opt_mm, test = "Chisq") 
 
@@ -458,7 +482,7 @@ drop1(mm_f12, test = "Chisq")
 ```
 
 
-
+We dropped (in order) sex, and day of release.
 Now let's check the fit using simulated residuals.
 
 
@@ -474,16 +498,18 @@ Model fit is excellent.
 summary(mm_f12)
 ```
 
-Generation (F0, F1, F2 and NORimmigrant) and year (fixed effect factor four years) and length significantly improve the fit to the data according to LRT, AIC and Wald tests.
+Generation (F0, F1, F2 and NORimmigrant), year (fixed effect factor four years) and length significantly improve the fit to the data according to LRT, AIC and Wald tests.
 
 Let's look at the predicted effects
 
-```{r}
+```{r, message = FALSE, warning = FALSE}
 
 eff1 <- predictorEffect("generation", mm_f12)
 effdf <- as.data.frame(eff1)
 effdf$generation <- factor(effdf$generation, levels=c("HOR", "F1", "NORimmigrant")) # relevel the genertions for a nicer plot
 
+#note that this throws an error. w/r/t this error the glmmTMB author (Ben Bolker) states that "the predicted variances are used when computing residuals (which are Pearson residuals by default) for partial residuals plots. I think that if you're not plotting partial residuals, it doesn't matter." 
+# Since we do not plot partial residuals but instead th95 CI for the predition, we are good here
 
 ggplot(data = effdf, aes(x = (generation), y = fit))+ 
   geom_point(position=position_dodge(width=0.3), size = 3) + 
@@ -500,11 +526,14 @@ contrast(em, "pairwise", adjust = "Tukey", type = "response")
 
 The novel finding here is that both NORimmigrants and F1s have greater fitness than HORs, but do not differ from one another.
 
-# Demography Differences in Offspring
+# Differences among Offspring
 
-We found that HORs, F1s and NOR immigrants vary in the number of adult offspring they produce, are there other differences in their offspring, such as age at maturity?
+We found that HORs, F1s and NOR immigrants produce different numbers of adult offspring, are there other differences in their offspring, such as age at maturity, or size ?
 
-```{r}
+## AAM
+
+The plot below can be a bit confusing so let's be clear. These plots show the age of OFFSPRING of each of the three groups, not the age of the groups.
+```{r, message = FALSE, warning=FALSE}
 pedigree_long <- pedigree %>%
   pivot_longer(-offspring_sample_id, names_to = "parent_sex", values_to = "parent")
 
@@ -521,15 +550,15 @@ ggplot(off_age_F12)+geom_bar(aes(x = generation, fill = offspring_age), position
 
 ```
 
-Yes, offspring of HOR parents tend to be younger than those F1s or NOR immigrants, but is this difference stronger than what we would expect by chance alone. 
+Yes, offspring of HOR parents tend to be younger than those F1s or NOR immigrants, but is this difference stronger than what we would expect by chance alone? Sample size in NOR immigrants is looking a little small.
 
-Age at maturity is a count variable, but it could arguably be modeled as a continuous variable as well. Let's be sure to do it the "right" way here first. 
+Age at maturity is a count variable, but it could arguably be modeled as a continuous variable as well. Let's be sure to do it the "right" way here first, we'll recognize that fish can either be 3, 4, 5 or 6 years old, and not 3.5 years old. 
 
-## AAM GLM
+### AAM GLM
 
 First we should note that there are very few age-3 or age-6 offspring. If we remove these individuals, we can fit a binomial model. In other words we will parameterize a model that predicts the probability for the different groups to produce offspring that return at age 5 vs age 4. 
 
-### EDA and Modeling
+#### EDA and Modeling
 
 Just like with the TLF we will be thoughtful about how to combine data across years. First let see if there is a relationship across years that we need to be concerned with.
 
@@ -596,5 +625,250 @@ ggplot(data = effdf, aes(x = (generation), y = fit))+
   geom_errorbar(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.3), width = 0.1)+ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring")+xlab("Generation")+theme_bw()
 ```
 
-We have a different pattern in this variable (aam of offspring), compared to TLF. F1s produce more age 5 offspring than HORs, but the confidence interval for the NOR immigrants overlaps both F1s and HORs. 
+We have a different pattern in this variable (aam of offspring), compared to TLF. F1s produce more age 5 offspring than HORs, but the confidence interval for the NOR immigrants overlaps __both__ F1s and HORs. 
+
+## Size
+
+What about size? Specifically do HORs F1s and NOR immigrants produce offspring that differ in size. Given our results so far we might expect either no difference, or that F1s and NORimmigrats produce larger offspring.
+
+First let's take a look at the data. Can we fit a simple linear model here or do we need to incorporate covariates like we have elsewhere? Let's look at parent year by offspring size effects.
+```{r,message=FALSE, warning=FALSE}
+#let's put together the dataset
+pedigree_long <- pedigree %>%
+  pivot_longer(-offspring_sample_id, names_to = "parent_sex", values_to = "parent")
+
+off_age_F12_2 <- F12_mmdata %>%
+  left_join(select(pedigree_long, -parent_sex), by = c("sample_id" = "parent")) %>%
+  left_join(select(aam_data, offspring_sample_id, age)) %>%
+  rename(offspring_age = age) %>%
+  filter(!is.na(offspring_sample_id))
+
+off_age_F12_2 %<>%
+  left_join(select(dedup, sample_id, length_off = length, year_off = year), by = c("offspring_sample_id" = "sample_id")) %>%
+  mutate(year_off = as.factor(as.character(year_off)),
+         year_f = as.factor(year))
+
+
+
+ggplot(off_age_F12_2)+geom_histogram(aes(x = length_off, fill = year), bins = 20, position = position_dodge())+xlab("length of offspring (cm)")+ guides(fill=guide_legend(title="Parent Year"))+theme_bw()
+
+ggplot(off_age_F12_2)+geom_histogram(aes(x = length_off, fill = year_off), bins = 20, position = position_dodge())+xlab("length of offspring (cm)")+ guides(fill=guide_legend(title="Offspring Year"))+theme_bw()
+
+
+```
+
+Yes, there are some very clear differences between parent years in size, so we'll need to control for this.
+
+We'll fit a linear model with two fixed effects, generation and year, check model assumptions and evaluate significance with an F-test and type II SS.
+
+```{r}
+#no this uses the wrong Sum of Squares
+#summary(lm(length_off ~ generation + year_off, data = off_age_F12_2))
+
+size_lm <- lm(length_off ~ generation + year_f , data = off_age_F12_2)
+
+#plot(size_lm), no obvious issues here, let's move ahead
+
+Anova(size_lm , type = "II")
+
+```
+
+No, significant effect of generation (p = 0.44) after controlling for year. Let's do some post hoc plotting (we shouldn't present this because the effect was not significant) .
+
+```{r}
+em <- emmeans(lm(length_off ~ generation + year_f, data = off_age_F12_2), "generation", type = "response")
+#contrast(em, "pairwise", type = "response")
+plot(em)
+
+
+#ggplot(off_age_F12_2)+geom_histogram(aes(x = length_off, fill = generation), bins = 20, position = position_dodge())+xlab("length of offspring (cm)")+ guides(fill=guide_legend(title="Generation of Parent"))+scale_fill_manual(values = c("#4477AA", "#CCBB44", "#AA3377"))+theme_bw()
+```
+
+Results are similar in trend to age, but the confidence intervals are much wider, leading to no significant comparisons. 
+
+# Miscellania
+
+The sections above represent the final, concise analysis, but there are many little questions, cul de sacs, and supplemental analyses that are sometimes worth retaining for later. This section collects those. Not intended to be shared widely.
+
+## Delta Method
+
+Our primary hypotheis testing method is to fit generalized linear mixed model that includes the factor "generation" as a fixed effect and then determine if the estimated effect of the different levels of this factor are significantly different from one another, once all other effects have been controlled for. This is likely the best way to address our questions, but let's not forget the clever approach that has been employed in past studies of RRS, the delta method. 
+
+The delta method takes advantage of the fact while TLF is a count variable with variance greater than the mean and requiring very advanced statistics to appropriately model, RRS is a ratio. If we are able to describe mean and variance of TLF for each of the groups we should be able to divide them by one another and generate a ratio, and a confidence interval for this ratio can be estimated using the delta method. If the confidence interval doesn't include one, then the fitness of the groups is different!
+
+Let's use this delta method approach for each year.
+
+```{r, cache = TRUE, message=FALSE, warning=FALSE}
+# kalinowski method
+# I'n not sure I interpreted the kalinowski paper correctly, so I modified code from a published paper to make sure I am calculating the CIs properly. My understanding matched the modified code here, so I just used that. We should be sure to cite if it winds up in a paper.
+# https://doi.org/10.1098/rsos.221271
+
+rrs_ci_kalinowski_auke <- function(n_h_off, n_w_off, n_h_par, n_w_par, alpha){
+  chi_alpha <- qchisq(p = (1 - alpha), df = 1)
+  n_off <- sum(c(n_h_off, n_w_off))
+  n_par <- sum(c(n_h_par, n_w_par))
+  
+  rs_h <- n_h_off / n_h_par
+  rs_w <- n_w_off / n_w_par
+  
+  p_h_par <- n_h_par / n_par
+  p_w_par <- n_w_par / n_par
+  
+  rrs_h <- rs_h / rs_w
+  rrs_w <- rs_w / rs_w
+  rrs_avg <- (rrs_h * p_h_par) + (rrs_w * p_w_par)
+  
+  rrs_ml <- (n_h_off * log(p_h_par * rrs_h / rrs_avg)) + (n_w_off * log(p_w_par * rrs_w / rrs_avg))
+  
+  xi_dist <- bind_rows(
+    lapply(seq(0.01, 50, by = 0.01), function(rrs_h_xi) { #upper RRS up to 50
+      rrs_avg_xi <- (rrs_h_xi * p_h_par) + (rrs_w * p_w_par)
+      tibble(rrs_crit = rrs_h_xi,
+             logl = (n_h_off * log(p_h_par * rrs_h_xi / rrs_avg_xi)) + (n_w_off * log(p_w_par * rrs_w / rrs_avg_xi)) - (rrs_ml - chi_alpha / 2)
+      )
+    } )
+  )
+  
+  rrs_min <- xi_dist %>% 
+    mutate(abs_logl = abs(logl)) %>% 
+    filter(rrs_crit < rrs_h) %>% 
+    top_n(-1, abs_logl) %>% 
+    pull(rrs_crit)
+  
+  rrs_max <- xi_dist %>% 
+    mutate(abs_logl = abs(logl)) %>% 
+    filter(rrs_crit > rrs_h) %>% 
+    top_n(-1, abs_logl) %>% 
+    pull(rrs_crit)
+  
+  return(c(rrs_min, rrs_h, rrs_max))
+}
+
+# get data to enter
+rrs_delta <- F12_mmdata %>%
+  group_by(generation, year) %>%
+  summarise(n = n(), n_offspring = sum(tlf)) %>%
+  pivot_wider(names_from = generation, values_from = c(n, n_offspring))
+
+
+#n_h_off, n_w_off, n_h_par, n_w_par, alpha
+
+
+
+# embarrisingly redundant, slow code, consider revising, can be made at least 3x faster by not calling the same function 3 times witht e same parameters...
+# argument order reminder of function, n_h_off, n_w_off, n_h_par, n_w_par, alpha
+rrs_delta %<>%
+  rowwise() %>%
+  mutate(rrs_NH_lwr = rrs_ci_kalinowski_auke(n_offspring_HOR, n_offspring_NORimmigrant, n_HOR, n_NORimmigrant, alpha = 0.05)[1],
+         rrs_NH = rrs_ci_kalinowski_auke(n_offspring_HOR, n_offspring_NORimmigrant, n_HOR, n_NORimmigrant, alpha = 0.05)[2],
+         rrs_NH_upr = rrs_ci_kalinowski_auke(n_offspring_HOR, n_offspring_NORimmigrant, n_HOR, n_NORimmigrant, alpha = 0.05)[3]) %>%
+  mutate(rrs_FH_lwr = rrs_ci_kalinowski_auke(n_offspring_HOR, n_offspring_F1, n_HOR, n_F1, alpha = 0.05)[1],
+         rrs_FH = rrs_ci_kalinowski_auke(n_offspring_HOR, n_offspring_F1, n_HOR, n_F1, alpha = 0.05)[2],
+         rrs_FH_upr = rrs_ci_kalinowski_auke(n_offspring_HOR, n_offspring_F1, n_HOR, n_F1, alpha = 0.05)[3]) 
+```
+
+Now let's plot these.
+
+```{r, message=FALSE, warning=FALSE}
+
+plot_data <- rrs_delta %>%
+  select(year, starts_with("rrs")) %>%
+  pivot_longer(cols = -c(year), names_prefix = "rrs_", names_to = c("numerator", "value_type"), names_sep = "_", values_to = "value") %>%
+  mutate(value_type = case_when(is.na(value_type) ~ "MeanRRS",
+                                TRUE ~ value_type)) %>%
+  pivot_wider(names_from = "value_type", values_from = "value")
+  
+ggplot(plot_data)+geom_errorbar(aes(x = year, y = MeanRRS, ymin = lwr, ymax = upr, color = numerator), width = 0.3, position = position_dodge())+ geom_hline(aes(yintercept = 1), linetype = 2, color = "darkgrey")+theme_bw()+geom_point(aes(x = year, y = MeanRRS, color = numerator), size = 3,  position = position_dodge(width = 0.3))+xlab("")+scale_color_manual(name = "Generation in\nDenominator", values = c( "#CCBB44", "#AA3377"), labels = c("F1", "NOR"))+ylab("RRS\n TLF HOR / TLF Denominator")
+
+#ggplot(plot_data)+geom_pointrange(aes(x = year, y = MeanRRS, ymin = lwr, ymax = upr, color = numerator), width = 0.3, position = position_dodge())+ geom_hline(aes(yintercept = 1), linetype = 2, color = "red")+theme_bw()
+```
+
+Same results within each year (except 2015) using the delta method. RRS < 1 for regardless of whether F1s or NOR immigrants are in the numerator. Note that that this RRS calculation can't take differences in covariates like length and release day into effect. 
+
+
+## Final Figures
+
+### Coastwide
+In this section we plot key results from above for a powerpoint presentation. Eval flag is set to false for all of these so they should not produce anything.
+
+```{r, eval = FALSE}
+# First the TLF figure
+
+eff1 <- predictorEffect("generation", mm_f12)
+effdf <- as.data.frame(eff1)
+effdf$generation <- factor(effdf$generation, levels=c("HOR", "F1", "NORimmigrant")) # relevel the genertions for a nicer plot
+
+#note that this throws an error. w/r/t this error the glmmTMB author (Ben Bolker) states that "the predicted variances are used when computing residuals (which are Pearson residuals by default) for partial residuals plots. I think that if you're not plotting partial residuals, it doesn't matter." 
+# Since we do not plot partial residuals but instead th95 CI for the predition, we are good here
+
+ggplot(data = effdf, aes(x = (generation), y = fit))+ 
+  geom_point(position=position_dodge(width=0.3), size = 3) + 
+  geom_errorbar(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.3), width = 0.1)+ylab("TLF")+xlab("Generation")+theme_bw()+theme(axis.text = element_text(size = 16, color = "black"))
+
+ggplot(data = effdf)+geom_bar(aes(x = generation, y = fit, color = generation, fill = generation), stat = "identity")+geom_errorbar(aes(x = generation, ymin = lower, ymax = upper), position=position_dodge(width=0.3), width = 0.1)+ylab("TLF")+xlab("Generation")+theme_bw()+theme(axis.text.x = element_text(size = 18, color = "black"), axis.text.y = element_text(size = 14, color = "black"), axis.title = element_text(size = 18))+scale_x_discrete(labels = c( "HOR", expression(F[1]), "NOR"))+scale_fill_manual(values = c("#228833", "#CCBB44", "#AA3377"))+scale_color_manual(values = c("#228833", "#CCBB44", "#AA3377"))+guides(color = FALSE, fill =FALSE)
+```
+
+
+Yet another way to plot this would be as an RRS.
+
+```{r, eval = FALSE}
+em <- emmeans(mm_f12, "generation")
+rrs_model <- contrast(em, "pairwise", adjust = "Tukey", type = "response")
+rrs_model <- as.data.frame(rrs_model) 
+ 
+ggplot(data = rrs_model, aes(x = contrast, y = ratio))+ 
+  geom_point(position=position_dodge(width=0.3), size = 3) + 
+  geom_errorbar(aes(ymin = ratio - SE, ymax = ratio + SE), position=position_dodge(width=0.3), width = 0.1)+ylab("RRS")+xlab("Comparison") + 
+  theme_bw()+theme(axis.text.x = element_text(size = 16, color = "black"), axis.title = element_text(size = 16), axis.text.y = element_text(size = 12, color = "black")) + 
+  scale_x_discrete(labels = c(expression(F[1]*" / NOR"),expression("HOR / " *F[1]), "HOR / NOR")) + 
+  geom_hline(aes(yintercept = 1), linetype = 2, color = "darkgrey")+ ylim(0, 1.2)
+
+```
+
+
+```{r, eval = FALSE}
+pedigree_long <- pedigree %>%
+  pivot_longer(-offspring_sample_id, names_to = "parent_sex", values_to = "parent")
+
+off_age_F12 <- F12_mmdata %>%
+  left_join(select(pedigree_long, -parent_sex), by = c("sample_id" = "parent")) %>%
+  left_join(select(aam_data, offspring_sample_id, age)) %>%
+  rename(offspring_age = age) %>%
+  filter(!is.na(offspring_sample_id))
+
+ggplot(off_age_F12)+geom_bar(aes(x = generation, fill = offspring_age))+scale_fill_viridis_d(name = "Offspring\nAge")+theme_bw()+xlab("Parent Generation")+scale_x_discrete(labels = c( "HOR", expression(F[1]), "NOR"))+ylab("Count")+theme(axis.text.x = element_text(size = 18, color = "black"), axis.text.y = element_text(size = 14, color = "black"), axis.title = element_text(size = 18), legend.text = element_text(size = 14), , legend.title = element_text(size = 14))
+
+#also make proportional
+ggplot(off_age_F12)+geom_bar(aes(x = generation, fill = offspring_age), position = "fill")+scale_fill_viridis_d()+theme_bw()+xlab("parent")+ylab("proportion")
+
+```
+
+```{r, eval = FALSE}
+
+em <- emmeans(gen_age_ind, "generation", type = "response")
+contrast(em, "pairwise", type = "response")
+#ggplot(data = as.data.frame(em))+geom_pointrange(aes(x = generation, y = prob, ymin = asymp.LCL, ymax = asymp.UCL ))+theme_bw()+ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring")+xlab("Generation")
+
+
+
+eff1 <- predictorEffect("generation", gen_age_ind)
+effdf <- as.data.frame(eff1)
+effdf$generation <- factor(effdf$generation, levels=c("HOR", "F1", "NORimmigrant")) # relevel the genertions for a nicer plot
+
+
+ggplot(data = effdf, aes(x = (generation), y = fit))+ 
+  geom_point(position=position_dodge(width=0.3), size = 3) + 
+  geom_errorbar(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.3), width = 0.1)+ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring")+xlab("Generation")+theme_bw()
+
+
+ggplot(data = effdf)+geom_bar(aes(x = generation, y = fit, color = generation, fill = generation), stat = "identity") + 
+  geom_errorbar(aes(x = generation, ymin = lower, ymax = upper), position=position_dodge(width=0.3), width = 0.1) +
+  ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring") + xlab("Generation") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 18, color = "black"), axis.text.y = element_text(size = 14, color = "black"), axis.title = element_text(size = 18)) + 
+  scale_x_discrete(labels = c( "HOR", expression(F[1]), "NOR")) + 
+  scale_fill_manual(values = c("#228833", "#CCBB44", "#AA3377")) + 
+  scale_color_manual(values = c("#228833", "#CCBB44", "#AA3377")) + 
+  guides(color = FALSE, fill =FALSE)
+```
 
