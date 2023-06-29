@@ -628,6 +628,9 @@ ggplot(plot_data)+geom_errorbar(aes(x = year, y = MeanRRS, ymin = lwr, ymax = up
 ggplot(plot_data)+geom_errorbar(aes(x = year, y = MeanRRS, ymin = lwr, ymax = upr, color = numerator), width = 0.3, position = position_dodge())+ geom_hline(aes(yintercept = 1), linetype = 2, color = "darkgrey")+theme_bw()+geom_point(aes(x = year, y = MeanRRS, color = numerator), size = 3,  position = position_dodge(width = 0.3))+xlab("")+scale_color_manual(name = "Contrast", values = c("#66CCEE", "#CCBB44", "#AA3377"), labels = c(expression(F[1]*" / NOR"),expression("HOR / " *F[1]), "HOR / NOR" ))+ylab(expression(" "[Delta]*"RRS"))+ theme(legend.text.align = 0) + coord_cartesian(ylim=c(0, 2))
 
 #ggplot(plot_data)+geom_pointrange(aes(x = year, y = MeanRRS, ymin = lwr, ymax = upr, color = numerator), width = 0.3, position = position_dodge())+ geom_hline(aes(yintercept = 1), linetype = 2, color = "red")+theme_bw()
+
+#ggplot(plot_data)+geom_errorbar(aes(x = year, y = MeanRRS, ymin = lwr, ymax = upr, color = numerator), width = 0.3, position = position_dodge(width = 0.5))+ geom_hline(aes(yintercept = 1), linetype = 2, color = "darkgrey")+theme_bw()+geom_point(aes(x = year, y = MeanRRS, color = numerator), size = 4,  position = position_dodge(width = 0.5))+xlab("")+scale_color_manual(name = "Contrast", values = c("#66CCEE", "#CCBB44", "#AA3377"), labels = c(expression(F[1]*" / NOR"),expression("HOR / " *F[1]), "HOR / NOR" ))+ylab(expression(" "[Delta]*"RRS"))+ theme(legend.text.align = 0) + coord_cartesian(ylim=c(0, 2))+theme(axis.text = element_text(size = 14), axis.title = element_text(size = 16), legend.text = element_text(size = 14), legend.title = element_text(size = 14))
+
 ```
 
 For the HOR RRSs, same results within each year (except 2015) using the delta method. RRS < 1 for regardless of whether F1s or NOR immigrants are in the numerator. Note that that this RRS calculation can't take differences in covariates like length and release day into effect.
@@ -782,7 +785,9 @@ off_age_F12 <- F12_mmdata %>%
   left_join(select(pedigree_long, -parent_sex), by = c("sample_id" = "parent")) %>%
   left_join(select(aam_data, offspring_sample_id, age)) %>%
   rename(offspring_age = age) %>%
-  filter(!is.na(offspring_sample_id))
+  left_join(select(dedup, sample_id, offspring_sex = sex, year_off = year), by = c("offspring_sample_id" = "sample_id")) %>%
+  filter(!is.na(offspring_sample_id)) %>%
+  mutate(offspring_sex = as.factor(offspring_sex))
 
 ggplot(off_age_F12)+geom_bar(aes(x = generation, fill = offspring_age))+scale_fill_viridis_d()+theme_bw()+xlab("parent")
 
@@ -803,23 +808,39 @@ First we should note that there are very few age-3 or age-6 offspring. If we rem
 
 Just like with the TLF we will be thoughtful about how to combine data across years. First let see if there is a relationship across years that we need to be concerned with.
 
+The first question is what "year" to use. The year of parents spawned or the year the offspring returned. The latter doesn't make a lot of sense given that our response measure is age: Because we don't sample parents and offspring in infinite years, there will always be a bias towards young offspring in early years and old offspring in later years. For example, 2020 returning offspring need to be included, but they can only be 5 years produced in 2015 or 6 year olds in 2014. See below.
+
 ```{r}
-ggplot(off_age_F12)+geom_bar(aes(x = year, fill = offspring_age))+scale_fill_viridis_d()+theme_bw()+xlab("parent")+ylab("proportion")
+ggplot(off_age_F12)+geom_bar(aes(x = year_off, fill = offspring_age))+scale_fill_viridis_d()+theme_bw()+xlab("offspring year")+ylab("proportion")
 
 ```
 
-Yes, 2015 is mostly age 4. We should be careful to look for multicollinearity and interactions.
+So we should not use offspring year to control for interannual variation. Let's look at parent year. 
+```{r}
+ggplot(off_age_F12)+geom_bar(aes(x = year, fill = offspring_age))+scale_fill_viridis_d()+theme_bw()+xlab("offspring year")+ylab("proportion")
 
-First let's look at the relationship between year and generation and assess multicollinearity. We will assess with the GVIF.
+```
+
+Yes, 2015 is mostly age 4, but 2015 is also mostly HOR parents. We should be careful to look for multicollinearity and interactions.
+
+Let's also look at the effect of offspring sex. It would be surprising if there was not a pattern here. 
+
+```{r}
+ggplot(off_age_F12)+geom_bar(aes(x =offspring_sex, fill = offspring_age), position = "fill")+scale_fill_viridis_d()+theme_bw()+xlab("Offspring Sex")+ylab("proportion")
+```
+
+Sure enough, males return younger.
+
+Let's look at the relationship between year and generation and assess multicollinearity. We will assess with the GVIF.
 
 ```{r}
 off_age_F12 %<>%
   filter(offspring_age %in% c("4", "5")) 
 
-select(off_age_F12, generation, year, offspring_age) %>%
+select(off_age_F12, generation, year, offspring_age, offspring_sex) %>%
   pairs(., lower.panel = panel.cor, diag.panel = panel.hist, upper.panel = panel.smooth2)
   
-gen_age_ind <- glm(offspring_age ~ generation + year , family = "binomial", data = off_age_F12)
+gen_age_ind <- glm(offspring_age ~ generation + year + offspring_sex , family = "binomial", data = off_age_F12)
 # is there collinearity issue (e.g. does the impact of year and generation interact)
 vif(gen_age_ind)
 
@@ -830,47 +851,56 @@ We know there's some balance issues among year already (most NOR immigrants come
 The next step is to see if there is an interaction
 
 ```{r}
-gen_age_ind <- glm(offspring_age ~ generation * year , family = "binomial", data = off_age_F12)
+gen_age_ind <- glm(offspring_age ~ generation * year + offspring_sex*generation , family = "binomial", data = off_age_F12)
 drop1(gen_age_ind, test = "Chisq")
 ```
 
-LRT suggests not ( p = 0.1, delta AIC ~ 1), so I think we are good to include year at the start of model selection as a fixed effect. 
+LRT suggests not ( p > 0.05, delta AIC < 1), so I think we are good to include year at the start of model selection as a fixed effect and ignore year specific generation patterns. 
 
 ```{r}
-gen_age_ind <- glm(offspring_age ~ generation + year , family = "binomial", data = off_age_F12)
+gen_age_ind <- glm(offspring_age ~  year + offspring_sex*generation, family = "binomial", data = off_age_F12)
 drop1(gen_age_ind, test = "Chisq")
-# drop year, doesn't show up as significant, pvalue = 0.14 delta AIC < 1
+# drop year, doesn't show up as significant, pvalue = 0.1 delta AIC <1
 
-gen_age_ind <- glm(offspring_age ~ generation , family = "binomial", data = off_age_F12)
+gen_age_ind <- glm(offspring_age ~ generation*offspring_sex , family = "binomial", data = off_age_F12)
 drop1(gen_age_ind, test = "Chisq")
-```
+# interaction between generation and sex is marginal, delta AIC ~2 and p value is 0.05. This is pretty marginal. Let's take a closer look
 
-Final model is just generation. Let's validate, summarise the fit and do some post hoc tests.
-```{r}
-simulateResiduals(gen_age_ind , plot = TRUE)
 summary(gen_age_ind)
 
-em <- emmeans(gen_age_ind, "generation", type = "response", weights = "cell")
-contrast(em, "pairwise", type = "response")
-#ggplot(data = as.data.frame(em))+geom_pointrange(aes(x = generation, y = prob, ymin = asymp.LCL, ymax = asymp.UCL ))+theme_bw()+ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring")+xlab("Generation")
 
-
-
-eff1 <- predictorEffect("generation", gen_age_ind)
-effdf <- as.data.frame(eff1)
-effdf$generation <- factor(effdf$generation, levels=c("HOR", "F1", "NORimmigrant")) # relevel the genertions for a nicer plot
-
-
-ggplot(data = effdf, aes(x = (generation), y = fit))+ 
-  geom_point(position=position_dodge(width=0.3), size = 3) + 
-  geom_errorbar(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.3), width = 0.1)+ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring")+xlab("Generation")+theme_bw()
 ```
 
-We have a different pattern in this variable (aam of offspring), compared to TLF. F1s produce more age 5 offspring than HORs, but the confidence interval for the NOR immigrants overlaps __both__ F1s and HORs. 
+We should prbably take this interaction into account. 
+Final model is generation*offspring sex. Let's validate, summarise the fit and do some post hoc tests.
+```{r}
+simulateResiduals(gen_age_ind , plot = TRUE)
+
+em <- emmeans(gen_age_ind, ~ generation | offspring_sex, type = "response")
+contrast(em, "pairwise", type = "response")
+
+ggplot(data = as.data.frame(em)) + 
+  geom_point(aes(x = generation, y=prob), size = 3)+ 
+  geom_errorbar(aes(x = generation, ymin = asymp.LCL, ymax = asymp.UCL), width = 0.2)+ 
+  theme_bw()+ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring")+xlab("Generation of Parent")+guides(color=guide_legend(title="Sex of Offspring")) + scale_x_discrete(labels = c( "HOR", expression(F[1]), "NOR"))+ 
+  facet_grid(cols=vars(offspring_sex))
+
+
+#eff1 <- predictorEffect("generation", gen_age_ind)
+#effdf <- as.data.frame(eff1)
+#effdf$generation <- factor(effdf$generation, levels=c("HOR", "F1", "NORimmigrant")) # relevel the genertions for a nicer plot
+
+
+#ggplot(data = effdf, aes(x = (generation), y = fit))+ 
+#  geom_point(position=position_dodge(width=0.3), size = 3) + 
+#  geom_errorbar(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.3), width = 0.1)+ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring")+xlab("Generation")+theme_bw()
+```
+
+For females we have a similar pattern to TLF, F1s and NORs produce more age 5 offspring than HORs, similar age offspring to each other. For males, F1s producemore age 5 offspring than HORs and NORs, but no other contrast is significant.
 
 ## Size
 
-What about size? Specifically do HORs F1s and NOR immigrants produce offspring that differ in size. Given our results so far we might expect either no difference, or that F1s and NORimmigrats produce larger offspring.
+What about size? Specifically do HORs F1s and NOR immigrants produce offspring that differ in size. 
 
 First let's take a look at the data. Can we fit a simple linear model here or do we need to incorporate covariates like we have elsewhere? Let's look at parent year by offspring size effects.
 ```{r,message=FALSE, warning=FALSE}
@@ -885,28 +915,51 @@ off_age_F12_2 <- F12_mmdata %>%
   filter(!is.na(offspring_sample_id))
 
 off_age_F12_2 %<>%
-  left_join(select(dedup, sample_id, length_off = length, year_off = year), by = c("offspring_sample_id" = "sample_id")) %>%
+  left_join(select(dedup, sample_id, length_off = length, year_off = year, offspring_sex = sex), by = c("offspring_sample_id" = "sample_id")) %>%
   mutate(year_off = as.factor(as.character(year_off)),
-         year_f = as.factor(year))
+         year_f = as.factor(year),
+         offspring_sex = as.factor(offspring_sex)) %>%
+  drop_na(length_off)
 
-
+# sample size will be smaller because not all inds have length measurement, let's check
+off_age_F12_2 %>% 
+  count(generation, year) %>% 
+  pivot_wider(id_cols = year, names_from = generation, values_from = n)
 
 ggplot(off_age_F12_2)+geom_histogram(aes(x = length_off, fill = year), bins = 20, position = position_dodge())+xlab("length of offspring (cm)")+ guides(fill=guide_legend(title="Parent Year"))+theme_bw()
 
-ggplot(off_age_F12_2)+geom_histogram(aes(x = length_off, fill = year_off), bins = 20, position = position_dodge())+xlab("length of offspring (cm)")+ guides(fill=guide_legend(title="Offspring Year"))+theme_bw()
 
 
 ```
 
-Yes, there are some very clear differences between parent years and offspring years in size. Which one to control for is an interesting question though. Let's choose to use parent year as the covariate. This has two benefits. First we are focusing on differences between the parents; age of their offspring is response variable. Second this will keep the paper easier to understand, since year will mean the same thing across models. 
+Yes, there are some very clear differences between parent years and offspring years in size. One issue compared to the age glm is that fewer individuals have length measurements, so we have less power. The sample size in 2014 and 2015 is very small. It might also be worth looking for effects within individual years if we can't effectively control for year.
 
-We'll fit a linear model with two fixed effects, generation and (parent) year, check model assumptions and evaluate significance with an F-test and type II SS.
+Just like the AAM GLM we should look for multicollinearity and possible year*generation patterns before we begin.
 
 ```{r}
+size_lm <- lm(length_off ~  year_f*generation + offspring_sex*generation, data = off_age_F12_2)
+Anova(size_lm , type = "II")
+```
+
+No year*generation interaction. What about collinearity.
+```{r}
+size_lm <- lm(length_off ~  year_f+generation + offspring_sex, data = off_age_F12_2)
+vif(size_lm)
+```
+
+Looking good here too. 
+
+We'll fit a linear model with three fixed effects, parent generation, parent year, and offspring sex, and the offspring_sex*generation interaction check model assumptions and evaluate significance with an F-test and type II SS.
+
+
+
+```{r, eval = FALSE}
 #no this uses the wrong Sum of Squares
 #summary(lm(length_off ~ generation + year_off, data = off_age_F12_2))
 
-size_lm <- lm(length_off ~ generation + year_f , data = off_age_F12_2)
+#Since we'll be comparing this to the AAM results, let's also run a model to make sure we have similar results when only look at age 4 and 5 offspring.
+
+size_lm <- lm(length_off ~  year_f*generation + offspring_sex*generation, data = filter(off_age_F12_2, offspring_age != 3, offspring_age !=6))
 
 #plot(size_lm), no obvious issues here, let's move ahead
 
@@ -914,18 +967,62 @@ Anova(size_lm , type = "II")
 
 ```
 
-No, significant effect of generation (p = 0.44) after controlling for year. Let's do some post hoc plotting (we shouldn't present this because the effect was not significant) .
+```{r}
+#no this uses the wrong Sum of Squares
+#summary(lm(length_off ~ generation + year_off, data = off_age_F12_2))
+
+size_lm <- lm(length_off ~ year_f + offspring_sex*generation, data = filter(off_age_F12_2))
+
+#plot(size_lm), no obvious issues here, let's move ahead
+
+Anova(size_lm , type = "II")
+
+```
+
+
 
 ```{r}
-em <- emmeans(lm(length_off ~ generation + year_f, data = off_age_F12_2), "generation", type = "response")
+em <- emmeans(lm(length_off ~ year_f + offspring_sex*generation , data = off_age_F12_2), ~  generation | offspring_sex, type = "response")
 #contrast(em, "pairwise", type = "response")
-plot(em)
+plot(em, comparisons = TRUE)
+contrast(em, "pairwise")
 
 
 #ggplot(off_age_F12_2)+geom_histogram(aes(x = length_off, fill = generation), bins = 20, position = position_dodge())+xlab("length of offspring (cm)")+ guides(fill=guide_legend(title="Generation of Parent"))+scale_fill_manual(values = c("#4477AA", "#CCBB44", "#AA3377"))+theme_bw()
 ```
 
-Results are similar in trend to age, but the confidence intervals are much wider, leading to no significant comparisons. 
+Results are similar in trend to age, but the confidence intervals are much wider, leading to only one significant pairwise comparisons, male F1s are bigger than male NORs. 
+
+Let's go a little further here. Is this just a power issue? If we take the qualitative results at face value, offspring of HORs have lower age at maturity, but same size at maturity as F1s, this suggests faster growth rate and therefore size at age for first than second generation hatchery descendants. Is this true?
+
+```{r, message = FALSE, warning=FALSE}
+ggplot(off_age_F12_2)+geom_density(aes(x = length_off, color = generation, fill = generation), alpha = 0.5, position = position_dodge())+ facet_grid(rows = vars(offspring_age), cols = vars(offspring_sex))+scale_fill_manual(values = c("#228833", "#CCBB44", "#AA3377"))+scale_color_manual(values = c("#228833", "#CCBB44", "#AA3377"))+ggtitle("Size at Age Among Offspring")+xlab("Size at Age (cm)")
+```
+
+When we combine data across years, there's no evidence that HOR achieve higher size at age. 
+
+```{r, message = FALSE, warning=FALSE, eval = FALSE}
+#within years plots
+ggplot(filter(off_age_F12_2, year == 2012))+geom_histogram(aes(x = length_off, color = generation, fill = generation), alpha = 0.5, position = position_dodge())+ facet_grid(rows = vars(offspring_age))+scale_fill_manual(values = c("#228833", "#CCBB44", "#AA3377"))+scale_color_manual(values = c("#228833", "#CCBB44", "#AA3377"))+ggtitle("Size at Age Among Offspring Produced in 2012")
+
+ggplot(filter(off_age_F12_2, year == 2013))+geom_histogram(aes(x = length_off, color = generation, fill = generation), alpha = 0.5, position = position_dodge())+ facet_grid(rows = vars(offspring_age))+scale_fill_manual(values = c("#228833", "#CCBB44", "#AA3377"))+scale_color_manual(values = c("#228833", "#CCBB44", "#AA3377"))+ggtitle("Size at Age Among Offspring Produced in 2013")
+
+ggplot(filter(off_age_F12_2, year == 2014))+geom_histogram(aes(x = length_off, color = generation, fill = generation), alpha = 0.5, position = position_dodge())+ facet_grid(rows = vars(offspring_age))+scale_fill_manual(values = c("#228833", "#CCBB44", "#AA3377"))+scale_color_manual(values = c("#228833", "#CCBB44", "#AA3377"))+ggtitle("Size at Age Among Offspring Produced in 2014")
+
+ggplot(filter(off_age_F12_2, year == 2015))+geom_histogram(aes(x = length_off, color = generation, fill = generation), alpha = 0.5, position = position_dodge())+ facet_grid(rows = vars(offspring_age))+scale_fill_manual(values = c("#228833", "#CCBB44", "#AA3377"))+scale_color_manual(values = c("#228833", "#CCBB44", "#AA3377"))+ggtitle("Size at Age Among Offspring Produced in 2015")
+```
+
+
+```{r, eval = FALSE}
+#Seems pretty clear from the plots that there is no size at age difference. Let's also some anovas.
+summary(aov(length_off ~ generation, data = filter(off_age_F12_2, offspring_age == 4, year == 2012)))
+summary(aov(length_off ~ generation, data = filter(off_age_F12_2, offspring_age == 5, year == 2012)))
+summary(aov(length_off ~ generation, data = filter(off_age_F12_2, offspring_age == 4, year == 2013)))
+summary(aov(length_off ~ generation, data = filter(off_age_F12_2, offspring_age == 5, year == 2013)))
+```
+
+So, no, there are no size at age differences between offspring of the different generations. Most likely explanation of differnt results between age and size results is statistical power. Sample size is smaller for length, and varaince structure is quite different (binomial vs continuous).
+
 
 # Miscellania
 
@@ -970,10 +1067,10 @@ sgs_meta <- readxl::read_xlsx("../input_data/carcass_meta_data/McKenzie DNA miss
 sgs_meta %<>%
   mutate(length = case_when(`FL (cm)` > 111 ~ `FL (cm)`/10,
                             TRUE ~`FL (cm)` )) %>% #some lengths are in mm and some in cm, the largest cm is 111, we'll use this as a cutoff and convert 
-  mutate(generation = "sgs_below_main") %>% # add a label
+  mutate(generation = "SGS") %>% # add a label
   mutate(year = lubridate::year(Date)) %>% #get years
-  filter(year == 2012) %>% # filter years to match input data
-#  filter(River == "South Fork McKenzie") %>%
+  filter(year != 2011) %>% # filter years to match input data
+  filter(River != "Horse Creek", River != "Lost Creek") %>% #get rid of non South Fork Tribs, just focus on below the dam and mainstem
   mutate(year = as.factor(year)) %>%
   mutate(sex = case_when(Sex == "M" ~ "M",
                          Sex == "Male" ~ "M",
@@ -987,33 +1084,101 @@ sgs_meta %<>%
 
 size_data <- F12_mmdata %>%
   select(generation, length, year, sex) %>%
-  bind_rows(select(sgs_meta, generation, length, year, sex )) %>%
-  filter(year == 2012)
+  bind_rows(select(sgs_meta, generation, length, year, sex ))# %>%
+#  filter(year == 2012)
 
 size_data %>% count(generation, year) %>% pivot_wider(id_cols = year, names_from = generation, values_from = n)
 ```
 
-There are 139 SF McKenzie NOR carcass samples from 2012 to 2015 that have a length measurement. There may be internannual variation in length, but the sample size * generation is pretty strongly unbalanced across years. Most carcass samples come from a year when few immigrants are sampled, 2015. Let's lump them all together and keep in mind that we can control for year only if we assume there is no year*generation interaction. We should maintain the possibility that NOR immigrants are different than wild spawners below the dam, regardless of the outcome of this analysis.
+There are 233 SF McKenzie NOR carcass samples from 2012 that have a length measurement. Since this is such a simple comparison, There may be internannual variation in length, but the sample size * generation is pretty strongly unbalanced across years. Most carcass samples come from a year when few immigrants are sampled, 2015. Let's lump them all together and keep in mind that we can control for year only if we assume there is no year*generation interaction. We should maintain the possibility that NOR immigrants are different than wild spawners below the dam, regardless of the outcome of this analysis.
 
 ```{r}
 ggplot(size_data)+geom_boxplot(aes(generation, length, color = year))+theme_bw()
 
 ggplot(size_data)+geom_boxplot(aes(generation, length, color = sex))+theme_bw()
 
-size_aov <- aov(length~ generation +  sex  , data = size_data)
+size_aov <- aov(length~ year+ generation *  sex  , data = size_data)
 Anova(size_aov, type = "II")
-summary(size_aov)
 #TukeyHSD(size_aov)  
 
 #predictorEffect("generation", size_aov)
 
-em <- emmeans(size_aov, "generation")
+em <- emmeans(size_aov, ~generation | sex)
 contrast(em, "pairwise", adjust = "Tukey", type = "response")
 plot(em, comparisons = TRUE)
 ```
 
-The only pairwise comparisons that are significant are those that include HORs (HORs always smaller) and F1s vs SGS. This suggests the NOR immigrants are not smaller (and less fit) than other NORs in the river, but the trend was there and significance was marginal. I don't think it's worth coming down one way or another here. 
+In the plot above the blue bars represent confidence intervals of marginal means, and red arrows are for the pairwise Tukey comparisons among them.
 
+For females, the only pairwise comparisons that are significant are those that include HORs (HORs always smaller). 
+
+For males, every pairwise comparison is different. HORS < F1 < NOR < SGS. 
+
+Let's also make publication worthy plot.
+
+```{r}
+plot_data <- as.data.frame(em)
+plot_data %<>%
+  mutate(generation = fct_relevel(generation, "HOR", "F1", "NORimmigrant", "SGS"))
+
+ggplot(data = plot_data) + 
+  geom_point(aes(x = generation, y=emmean), size = 3)+ 
+  geom_errorbar(aes(x = generation, ymin = lower.CL, ymax = upper.CL), width = 0.2)+ 
+  theme_bw()+ylab("Length (cm)")+xlab("Generation")+ scale_x_discrete(labels = c( "HOR", expression(F[1]), "NOR", "Carcass"))+ 
+  facet_grid(cols=vars(sex))
+```
+
+
+
+## AAM TLF
+
+```{r, eval = FALSE}
+age_mm_data <- F12_mmdata %>% left_join(select(aam_data, offspring_sample_id, age), by = c("sample_id" = "offspring_sample_id")) %>% drop_na(age)
+
+mm_age <- glmmTMB(tlf ~ jday_c + sex + age + year+ age*sex + length + (1|group) , data = age_mm_data, family = nbinom2)
+drop1(mm_age, test = "Chisq")
+# drop the interaction
+mm_age <- glmmTMB(tlf ~ jday_c + sex + age + year + length+ (1|group) , data = age_mm_data, family = nbinom2)
+drop1(mm_age, test = "Chisq")
+#drop sex
+mm_age <- glmmTMB(tlf ~ jday_c + age + year + (1|group) , data = age_mm_data, family = nbinom2)
+drop1(mm_age, test = "Chisq")
+#drop jday
+mm_age <- glmmTMB(tlf ~  age + year + (1|group) , data = age_mm_data, family = nbinom2)
+drop1(mm_age, test = "Chisq")
+
+#validate fit
+simulateResiduals(mm_age, plot = TRUE)
+
+#estimate marginal means
+em <- emmeans(mm_age, "age_f")
+contrast(em, "pairwise", type = "response")
+```
+
+## Release Location
+
+We know a priori that there are no fitness differences associated with release location in this reintroduction, but the readers/reviewers do not. Unmarked fish are released only at one location, whereas HORs are released at several. Let's be very conservative and only compare fish released at the single shared site. Then we'll refit the final model and see how sensitive the parameter estimates are. 
+```{r}
+ggplot(F12_mmdata)+geom_bar(aes(x = release, fill = generation), alpha = 0.8) + scale_fill_manual(values = c("#228833", "#CCBB44", "#AA3377"))+ theme_bw()+xlab("Release Location")
+
+mm_f12_hr <- glmmTMB(tlf ~ generation + length +   year + sex+ (1| group ) , data = filter(F12_mmdata, release == "Hard Rock"), family = nbinom2) 
+drop1(mm_f12_hr, test = "Chisq") 
+summary(mm_f12_hr)
+
+
+em <- emmeans(mm_f12_hr, "generation", weights = "cell")
+rrs_model <- contrast(em, "pairwise", adjust = "Tukey", type = "response")
+rrs_model <- as.data.frame(rrs_model) 
+ 
+ggplot(data = rrs_model, aes(x = contrast, y = ratio))+ 
+  geom_point(position=position_dodge(width=0.3), size = 3) + 
+  geom_errorbar(aes(ymin = ratio - SE, ymax = ratio + SE), position=position_dodge(width=0.3), width = 0.1)+ylab(expression(" "[model]*"RRS"))+xlab("Contrast") + 
+  theme_bw()+theme(axis.text.x = element_text(size = 16, color = "black"), axis.title = element_text(size = 16), axis.text.y = element_text(size = 12, color = "black")) + 
+  scale_x_discrete(labels = c(expression(F[1]*" / NOR"),expression("HOR / " *F[1]), "HOR / NOR")) + 
+  geom_hline(aes(yintercept = 1), linetype = 2, color = "darkgrey")+ ylim(0, 1.2)
+```
+
+Nearly identical results, even when we exclude about 3/4 of HORs released at other sites.
 
 
 ## Final Figures
@@ -1064,41 +1229,52 @@ off_age_F12 <- F12_mmdata %>%
   left_join(select(pedigree_long, -parent_sex), by = c("sample_id" = "parent")) %>%
   left_join(select(aam_data, offspring_sample_id, age)) %>%
   rename(offspring_age = age) %>%
-  filter(!is.na(offspring_sample_id))
+  filter(!is.na(offspring_sample_id)) %>%
+  left_join(select(dedup, sample_id, off_sex = sex), by = c("offspring_sample_id" = "sample_id"))
 
-ggplot(off_age_F12)+geom_bar(aes(x = generation, fill = offspring_age))+scale_fill_viridis_d(name = "Offspring\nAge")+theme_bw()+xlab("Parent Generation")+scale_x_discrete(labels = c( "HOR", expression(F[1]), "NOR"))+ylab("Count")+theme(axis.text.x = element_text(size = 18, color = "black"), axis.text.y = element_text(size = 14, color = "black"), axis.title = element_text(size = 18), legend.text = element_text(size = 14), , legend.title = element_text(size = 14))
+ggplot(off_age_F12)+facet_grid(cols = vars(off_sex))+geom_bar(aes(x = generation, fill = offspring_age))+scale_fill_viridis_d(name = "Offspring\nAge")+theme_bw()+xlab("Parent Generation")+scale_x_discrete(labels = c( "HOR", expression(F[1]), "NOR"))+ylab("Count")+theme(axis.text.x = element_text(size = 18, color = "black"), axis.text.y = element_text(size = 14, color = "black"), axis.title = element_text(size = 18), legend.text = element_text(size = 14), , legend.title = element_text(size = 14))
 
 #also make proportional
-ggplot(off_age_F12)+geom_bar(aes(x = generation, fill = offspring_age), position = "fill")+scale_fill_viridis_d()+theme_bw()+xlab("parent")+ylab("proportion")
+
+ggplot(off_age_F12)+facet_grid(cols = vars(off_sex))+geom_bar(aes(x = generation, fill = offspring_age), position = "fill")+scale_fill_viridis_d(name = "Offspring\nAge")+theme_bw()+xlab("Parent Generation")+scale_x_discrete(labels = c( "HOR", expression(F[1]), "NOR"))+ylab("Proportion")+theme(axis.text.x = element_text(size = 18, color = "black"), axis.text.y = element_text(size = 14, color = "black"), axis.title = element_text(size = 18), legend.text = element_text(size = 14), , legend.title = element_text(size = 14))
+
+
 
 ```
 
 ```{r, eval = FALSE}
-
-em <- emmeans(gen_age_ind, "generation", type = "response")
+em <- emmeans(gen_age_ind, ~ generation | offspring_sex, type = "response")
 contrast(em, "pairwise", type = "response")
-#ggplot(data = as.data.frame(em))+geom_pointrange(aes(x = generation, y = prob, ymin = asymp.LCL, ymax = asymp.UCL ))+theme_bw()+ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring")+xlab("Generation")
+
+pd <- as.data.frame(em)
+
+pd %<>%
+  mutate(offspring_sex = case_when(offspring_sex == "F" ~ "Female",
+                                   offspring_sex == "M" ~ "Male"))
+  
+
+ggplot(pd) + 
+  geom_point(aes(x = generation, y=prob), size = 3)+ 
+  geom_errorbar(aes(x = generation, ymin = asymp.LCL, ymax = asymp.UCL), width = 0.2)+ 
+  theme_bw()+ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring")+xlab("Generation of Parent")+guides(color=guide_legend(title="Sex of Offspring")) + scale_x_discrete(labels = c( "HOR", expression(F[1]), "NOR"))+ theme(axis.text.x = element_text(size = 16, color = "black"), axis.text.y = element_text(size = 10, color = "black"), axis.title = element_text(size = 14), legend.text = element_text(size = 12), , legend.title = element_text(size = 12))+
+  facet_grid(cols=vars(offspring_sex))+theme(strip.text.x = element_text(size = 12))
+```
+
+### Paper
+
+```{r}
+ggplot(data = F12_mmdata)+geom_density(aes(x = jday, fill = generation, color = generation), alpha = 0.4)+theme_bw()+scale_fill_manual(values = c("#228833", "#CCBB44", "#AA3377"),labels = c( "HOR", expression(F[1]), "NOR"))+scale_color_manual(values = c("#228833", "#CCBB44", "#AA3377"), labels = c( "HOR", expression(F[1]), "NOR"))+xlab("Julian Day of Release")+theme(legend.title=element_blank(), legend.text.align = 0)+ylab("Density")
 
 
-
-eff1 <- predictorEffect("generation", gen_age_ind)
+eff1 <- predictorEffect("generation", mm_f12)
 effdf <- as.data.frame(eff1)
 effdf$generation <- factor(effdf$generation, levels=c("HOR", "F1", "NORimmigrant")) # relevel the genertions for a nicer plot
 
+#note that this throws an error. w/r/t this error the glmmTMB author (Ben Bolker) states that "the predicted variances are used when computing residuals (which are Pearson residuals by default) for partial residuals plots. I think that if you're not plotting partial residuals, it doesn't matter." 
+# Since we do not plot partial residuals but instead th95 CI for the predition, we are good here
 
 ggplot(data = effdf, aes(x = (generation), y = fit))+ 
   geom_point(position=position_dodge(width=0.3), size = 3) + 
-  geom_errorbar(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.3), width = 0.1)+ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring")+xlab("Generation")+theme_bw()
-
-
-ggplot(data = effdf)+geom_bar(aes(x = generation, y = fit, color = generation, fill = generation), stat = "identity") + 
-  geom_errorbar(aes(x = generation, ymin = lower, ymax = upper), position=position_dodge(width=0.3), width = 0.1) +
-  ylab("Proportion Age-5 Offspring\n vs. Age-4 Offspring") + xlab("Generation") + 
-  theme_bw() + 
-  theme(axis.text.x = element_text(size = 18, color = "black"), axis.text.y = element_text(size = 14, color = "black"), axis.title = element_text(size = 18)) + 
-  scale_x_discrete(labels = c( "HOR", expression(F[1]), "NOR")) + 
-  scale_fill_manual(values = c("#228833", "#CCBB44", "#AA3377")) + 
-  scale_color_manual(values = c("#228833", "#CCBB44", "#AA3377")) + 
-  guides(color = FALSE, fill =FALSE)
+  geom_errorbar(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.3), width = 0.1)+ylab("TLF")+xlab("Generation")+theme_bw()+scale_x_discrete(labels = c( "HOR", expression(F[1]), "NOR"))+theme(text = element_text(size = 16))
 ```
 
